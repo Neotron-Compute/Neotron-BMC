@@ -126,29 +126,40 @@ This command writes to an address in the NBMC. The payload is the 8-bit register
 | Address | Name                                  | Type  | Contains                                                 | Length |
 | ------- | ------------------------------------- | ----- | -------------------------------------------------------- | ------ |
 | 0x00    | Firmware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 64     |
-| 0x01    | Hardware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 64     |
-| 0x02    | Interrupt Status                      | R/W1C | Which interrupts are currently active, as a bitmask.     | 2      |
+| 0x01    | Interrupt Status                      | R/W1C | Which interrupts are currently active, as a bitmask.     | 2      |
 | 0x02    | Interrupt Control                     | R/W   | Which interrupts are currently enabled, as a bitmask.    | 2      |
-| 0x10    | UART Receive/Transmit Buffer          | FIFO  | Data received over the UART                              | max 64 |
+| 0x03    | LED Control                           | R/W   | Settings for the LED outputs                             | 1      |
+| 0x04    | Button Status                         | RO    | The current state of the buttons                         | 1      |
+| 0x05    | System Temperature                    | RO    | Temperature in °C, as an `i8`                            | 1      |
+| 0x10    | UART Receive/Transmit Buffer          | FIFO  | Data received/to be sent over the UART                   | max 64 |
 | 0x11    | UART FIFO Control                     | R/W   | Settings for the UART FIFO                               | 1      |
-| 0x12    | UART Control                          | R/W   | ...                                                      | 1      |
-| 0x13    | UART Status                           | R/W   | ...                                                      | 1      |
-| 0x14    | UART Baud Rate                        | R/W   | ...                                                      | 4      |
-| 0x20    | PS/2 Keyboard Receive/Transmit Buffer | FIFO  | ...                                                      | max 16 |
-| 0x22    | PS/2 Keyboard Control                 | R/W   | ...                                                      | 1      |
-| 0x23    | PS/2 Keyboard Status                  | R/W1C | ...                                                      | 1      |
-| 0x30    | PS/2 Mouse Receive/Transmit Buffer    | FIFO  | ...                                                      | max 16 |
-| 0x32    | PS/2 Mouse Control                    | R/W   | ...                                                      | 1      |
-| 0x33    | PS/2 Mouse Status                     | R/W1C | ...                                                      | 1      |
-| 0x40    | LED Control                           | R/W   | ...                                                      | 1      |
-| 0x41    | Button Status                         | RO    | ...                                                      | 1      |
+| 0x12    | UART Control                          | R/W   | Settings for the UART                                    | 1      |
+| 0x13    | UART Status                           | R/W1C | The current state of the UART                            | 1      |
+| 0x14    | UART Baud Rate                        | R/W   | The UART baud rate in bps, as a `u32le`                  | 4      |
+| 0x20    | PS/2 Keyboard Receive/Transmit Buffer | FIFO  | Data received/to be sent over the PS/2 keyboard port     | max 16 |
+| 0x21    | PS/2 Keyboard Control                 | R/W   | Settings for the PS/2 Keyboard port                      | 1      |
+| 0x22    | PS/2 Keyboard Status                  | R/W1C | Current state of the PS/2 Keyboard port                  | 1      |
+| 0x30    | PS/2 Mouse Receive/Transmit Buffer    | FIFO  | Data received/to be sent over the PS/2 Mouse port        | max 16 |
+| 0x31    | PS/2 Mouse Control                    | R/W   | Settings for the PS/2 Mouse port                         | 1      |
+| 0x32    | PS/2 Mouse Status                     | R/W1C | Current state of the PS/2 Mouse port                     | 1      |
+| 0x50    | I²C Receive/Transmit Buffer           | FIFO  | Data received/to be sent over the I²C Bus                | max 16 |
+| 0x51    | I²C FIFO Control                      | R/W   | Settings for the I²C FIFO                                | 1      |
+| 0x52    | I²C Control                           | R/W   | Settings for the I²C Bus                                 | 1      |
+| 0x53    | I²C Status                            | R/W1C | Current state of the I²C Bus                             | 1      |
+| 0x54    | I²C Baud Rate                         | R/W   | The I²C clock rate in Hz, as a `u32le`                   | 4      |
 
 The register types are:
 
 * `RO` - read only register, where writes will return an error
 * `R/W` - read/write register
-* `R/W1C` - when writing a 1 bit clears that bit position and a 0 bit is ignored, reads are as normal.
+* `R/W1C` - reads as usual, but when writing a 1 bit clears that bit position and a 0 bit is ignored
 * `FIFO` - a first-in, first-out buffer
+
+### Address 0x00 - Firmware Version
+
+This read-only register returns the firmware version of the NBMC, as a UTF-8 string. The register length is always 64 bytes, and the string is null-padded. We also guarantee that the firmware version will always be less than or equal to 63 bytes, so you can also treat this string as null-terminated.
+
+An official release will have a version string of the form `tags/v1.2.3`. An unofficial release might be `heads/develop-dirty`. It is not recommended that you rely on these formats or attempt to parse the version string. It is however useful if you can quote this string when reporting issues with the firmware.
 
 ## Build Requirements
 
