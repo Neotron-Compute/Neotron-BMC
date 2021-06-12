@@ -7,15 +7,15 @@ use neotron_bmc as _; // memory layout + panic handler
 // feature)
 #[defmt_test::tests]
 mod tests {
-    use defmt::{assert, assert_eq};
+	use defmt::{assert, assert_eq};
 
-    #[test]
-    fn assert_true() {
-        assert!(true)
-    }
+	#[test]
+	fn assert_true() {
+		assert!(true)
+	}
 
-    #[test]
-    fn assert_eq() {
-        assert_eq!(24, 42, "TODO: write actual tests")
-    }
+	#[test]
+	fn assert_eq() {
+		assert_eq!(24, 42, "TODO: write actual tests")
+	}
 }
