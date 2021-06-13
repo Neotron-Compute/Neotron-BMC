@@ -4,7 +4,7 @@ Firmware for the Neotron Board Management Controller (NBMC).
 
 ## Introduction
 
-The NMBC is an always-on microcontroller used on Neotron systems. It has very low idle power consumption, allowing it to remain powered up at all times. This lets it listen to button events from the Power and Reset buttons, and control the system LEDs, main `~RESET` signal and turn the main 5V Power Rail on and off. This lets your Neotron system have smart 'ATX PC' style features like a soft power button, and it also ensures that all power rails come up before the system is taken out of reset.
+The NBMC is an always-on microcontroller used on Neotron systems. It has very low idle power consumption, allowing it to remain powered up at all times. This lets it listen to button events from the Power and Reset buttons, and control the system LEDs, main `~RESET` signal and turn the main 5V Power Rail on and off. This lets your Neotron system have smart 'ATX PC' style features like a soft power button, and it also ensures that all power rails come up before the system is taken out of reset.
 
 The NBMC appears to the main Neotron system processor as an Expansion Device. As such it sits on the SPI bus as a peripheral device, with a dedicated Chip Select line and a dedicated IRQ line. It provides to the system:
 
@@ -71,66 +71,91 @@ This design should also be pin-compatible with the following SoCs (although this
 
 Note that not all STM32 pins are 5V-tolerant, and the PS/2 protocol is a 5V open-collector system, so ensure that whichever part you pick has 5V-tolerant pins (marked `FT` or `FTt` in the datasheet) for the PS/2 signals. All of the parts above _should_ be OK, but they haven't been tested. Let us know if you try one!
 
-## Communications Protocol - SPI Frames
+## SPI Communications Protocol
 
 The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on rising edge) at up to 16 MHz (TBD). It uses frames made up of 8-bit words.
 
-To communicate with the NBMC, first take the Chip Select line (`SPI1_nCS`) low, then send the appropriate number of bytes. SPI is a full-duplex system, but in this system only one side is actually transferring useful data at any time.
+To communicate with the NBMC, the Host Processor must first take the Chip Select line (`SPI1_nCS`) low, then send a Header. SPI is a full-duplex system, but in this system only one side is actually transferring useful data at any time, so whilst the Header is being sent the Host will receive Padding Bytes in return (which can be discarded).
 
-Once the appropriate number of bytes have been exchange, the Chip Select line must be raised for at least XXX microseconds, before another transfer is started.
+A Header specifies which direction the transfer is occurring (a read or a write), which register address is being access, and how many bytes are being transferred.
+
+After the Header comes the Payload, and the Response Code. The Host must clock out the number of bytes specified in the header, plus one extra (for the response code). If the Host is performing a write, it must supply the data to be written (plus one padding byte for the response code). If the Host is performing a read, it must supply only padding bytes (which will be discarded), and it will receive the desired bytes in exchange, plus the response code.
+
+The Host must leave at least (*TODO*) XXX microseconds between a Header Packet and a Payload Packet in order for the NBMC to construct and prepare the Payload.
+
+Once the Header, Payload and Response Code have been exchange, the Host may send another Header, or it may raise the Chip Select line to indicate that the transfers are complete.
+
+A 'write' exchange looks like this:
 
 ```
-+-----+-------------...-------------+----------------...---------------+
-| CMD | CLEN | Command Bytes 0..n   | PADDING                          | Controller Out, Peripheral In (COPI)
-+-----+------+------...-------------+-----+------+---------...---------+
-| PADDING                           | RSP | RLEN | Response Bytes 0..n | Controller In, Peripheral Out (CIPO)
-+----------------...----------------+-----+------+---------...---------+
+ Host                    NBMC
+   |                      |
+   |-------Header (2)---->|
+   |<-----Padding-(2)-----|
+   |                      |
+   |------Payload-(N)---->|
+   |<-----Padding-(N)-----|
+   |                      |
+   |------Padding-(1)---->|
+   |<--Response Code-(1)--|
 ```
 
-The `CMD` byte is a command, given in the Table of Commands below. `RSP` is a response byte, given in the Table of Responses below.
+A 'read' exchange looks like this:
 
-Taking the Chip Select line low activates an Interrupt Routine. You must leave XXX microseconds (TBD) before starting the transfer in order to give the routine time to start. The various CMD bytes either read or write various registers in RAM. Once the Chip Select is raised, the system goes into its background processing, reading from the registers to set system outputs, and writing to registers based on system inputs.
+```
+ Host                    NBMC
+   |                      |
+   |-------Header (2)---->|
+   |<-----Padding-(2)-----|
+   |                      |
+   |------Padding-(N)---->|
+   |<-----Payload-(N)-----|
+   |                      |
+   |------Padding-(1)---->|
+   |<--Response Code-(1)--|
+```
 
-## Communications Protocol - Commands and Responses
+A Header is comprised of 16 bits (or two bytes), and is described in the following table.
 
-### Table of Commands
+| Byte | Bits | Meaning                        |
+| ---- | ---- | ------------------------------ |
+| 0    | 7    | Direction: 1 = read, 0 = write |
+| 0    | 6-0  | Register Address (0..128)      |
+| 1    | 7-0  | Transfer Length (0..255)       |
 
-| Command Byte | Name  |
-| ------------ | ----- |
-| 0x00         | PING  |
-| 0x01         | READ  |
-| 0x02         | WRITE |
+Note that a *Transfer Length* of 0 is interpreted as being 256 bytes, rather than zero bytes (because that wouldn't make any sense - you can't request to transfer nothing).
 
-### Table of Responses
+Here are some example headers:
 
-| Response Byte | Name            |
-| ------------- | --------------- |
-| 0x80          | OK              |
-| 0x81          | Unknown Command |
-| 0xFF          | Busy            |
+* `0x8520` is a Read from Register Address 5 (0x05), of length 33 bytes.
+* `0x9700` is a Read from Register Address 23 (0x17), of length 256 bytes.
+* `0x7FFF` is a Write from Register Address 127 (0x7F), of length 255 bytes.
 
-### PING Command
+A Payload is simply the number of desired data bytes (as specified in the Header Packet). The meaning of these bytes will depend on the Register Address that was given in the Header.
 
-This command just checks the NBMC is awake. There is no payload. A OK response is sent in return.
+The possible values of the 'Response Code' byte are:
 
-### READ Command
+| Value | Meaning                  |
+| ----- | ------------------------ |
+| 0x00  | Transfer OK              |
+| 0x01  | Data underflow/overflow  |
+| 0x02  | Unknown Register Address |
+| 0x03  | Unsupported Length       |
 
-This command reads from an address in the NBMC. The payload is the 8-bit register address, followed by the 8-bit number of bytes to read. The `CLEN` must therefore be two.
-
-### WRITE Command
-
-This command writes to an address in the NBMC. The payload is the 8-bit register address, followed by the 8-bit number of bytes to write, followed by the bytes themselves (up to 253). The `CLEN` must therefore be 2 + the number of bytes written.
-
-### Table of Registers
+## System Registers
 
 | Address | Name                                  | Type  | Contains                                                 | Length |
 | ------- | ------------------------------------- | ----- | -------------------------------------------------------- | ------ |
 | 0x00    | Firmware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 64     |
 | 0x01    | Interrupt Status                      | R/W1C | Which interrupts are currently active, as a bitmask.     | 2      |
 | 0x02    | Interrupt Control                     | R/W   | Which interrupts are currently enabled, as a bitmask.    | 2      |
-| 0x03    | LED Control                           | R/W   | Settings for the LED outputs                             | 1      |
-| 0x04    | Button Status                         | RO    | The current state of the buttons                         | 1      |
-| 0x05    | System Temperature                    | RO    | Temperature in °C, as an `i8`                            | 1      |
+| 0x03    | LED 0 Control                         | R/W   | Settings for the LED 0 output                            | 1      |
+| 0x04    | LED 1 Control                         | R/W   | Settings for the LED 1 output                            | 1      |
+| 0x05    | Button Status                         | RO    | The current state of the buttons                         | 1      |
+| 0x06    | System Temperature                    | RO    | Temperature in °C, as an `i8`                            | 1      |
+| 0x07    | System Voltage (3.3V rail)            | RO    | Voltage in Volts/32, as a `u8`                           | 1      |
+| 0x08    | System Voltage (5.0V rail)            | RO    | Voltage in Volts/32, as a `u8`                           | 1      |
+| 0x09    | Power Control                         | RW    | Enable/disable the power supply                          | 1      |
 | 0x10    | UART Receive/Transmit Buffer          | FIFO  | Data received/to be sent over the UART                   | max 64 |
 | 0x11    | UART FIFO Control                     | R/W   | Settings for the UART FIFO                               | 1      |
 | 0x12    | UART Control                          | R/W   | Settings for the UART                                    | 1      |
@@ -160,6 +185,164 @@ The register types are:
 This read-only register returns the firmware version of the NBMC, as a UTF-8 string. The register length is always 64 bytes, and the string is null-padded. We also guarantee that the firmware version will always be less than or equal to 63 bytes, so you can also treat this string as null-terminated.
 
 An official release will have a version string of the form `tags/v1.2.3`. An unofficial release might be `heads/develop-dirty`. It is not recommended that you rely on these formats or attempt to parse the version string. It is however useful if you can quote this string when reporting issues with the firmware.
+
+### Address 0x01 - Interrupt Status
+
+This eight bit register indicates which Interrupts are currently 'active'. An Interrupt will remain 'active' until a word is written to this register with a 1 bit in the relevant position.
+
+| Bit | Interrupt                  |
+| --- | -------------------------- |
+| 7   | Voltage Alarm              |
+| 6   | Button State Change        |
+| 5   | UART TX Empty              |
+| 4   | UART RX Not Empty          |
+| 3   | I²C TX Empty               |
+| 2   | I²C RX Not Empty           |
+| 1   | PS/2 Mouse RX Not Empty    |
+| 0   | PS/2 Keyboard RX Not Empty |
+
+### Address 0x02 - Interrupt Control
+
+This eight bit register indicates which Interrupts are currently 'enabled'. The IRQ_nHOST signal is a level interrupt and it will be active (LOW) whenever the value in the Interrupt Control register ANDed with the Interrupt Status register is non-zero.
+
+The bits have the same ordering as the Interrupt Status register.
+
+### Address 0x03 - LED 0 Control
+
+This eight-bit register controls the LED 0 attached to the NBMC
+
+| Bits | Meaning                                                        |
+| ---- | -------------------------------------------------------------- |
+| 7-4  | LED Cycle Duration: in 100 millisecond units                   |
+| 3-1  | LED Blink Ratio: 0 = solid, 1 = 10/90, 2 = 50/50, 3 = one-shot |
+| 0    | LED Enabled: 0 = off, 1 = on                                   |
+
+One-shot mode means that if the LED is set to 'on', it will automatically set itself to 'off' after the specified period. This can be useful for creating activity indicators - you could set an LED to 'one-shot' and set it 'on' whenever disk activity occurs, knowing that it will turn off automatically soon after if there is no further activity. Writing a value to this register whilst a one-shot is in progress will cancel the existing one-shot and start a new one (if the new value indicates it should do so).
+
+A Blink Ratio of 90/10, means that the LED will be on for 10% of the given cycle duration, and off for the other 90%.
+
+A Blink Ratio of 50/50, means that the LED will be on for 50% of the given cycle duration, and off for the other 50%.
+
+The Cycle Duration is the total time of an LED Cycle or, in one-shot mode, the timeout after which the LED sets itself to off. Note that because '0 ms' doesn't make sense, we take a value of zero in this register to be a value of 16 (i.e. 1600ms).
+
+#### Example 1
+
+* LED Cycle Duration = 5 (500ms)
+* LED Blink Ratio = 2 (50/50)
+* LED Enabled = 1 (on)
+
+The LED will blink twice a second, 250ms at a time.
+
+#### Example 2
+
+* LED Cycle Duration = 2 (200ms)
+* LED Blink Ratio = 1 (10/90)
+* LED Enabled = 1 (on)
+
+The LED will blink five times a second, 20ms at a time.
+
+### Address 0x04 - LED 1 Control
+
+See *Address 0x03 - LED 0 Control*
+
+### Address 0x05 - Button Status
+
+This eight-bit register indicates the state of the power button.
+
+Note that if the power button is held down for three seconds, the system will power-off instantly, regardless of what the host does.
+
+Note also that is it not possible to sample the reset button - pressing the reset button will instantly assert the system reset line, rebooting the Host.
+
+| Bits | Meaning                               |
+| ---- | ------------------------------------- |
+| 7-1  | Reserved for future use               |
+| 0    | Power Button: 0 = normal, 1 = pressed |
+
+### Address 0x06 - System Temperature
+
+This eight-bit register provides the current system temperature in °C, as measured on the STM32's internal temperature sensor. It is updated around once a second.
+
+### Address 0x07 - System Voltage (3.3V rail)
+
+This eight-bit register provides the current 3.3V rail voltage in units of 1/32 of a Volt. It is updated around once a second. A value of 105 (3.28V) to 106 (3.31V) is nominal. An interrupt is raised when the value exceeds 3.63V (116) or is lower than 2.97V (95).
+
+### Address 0x08 - System Voltage (5.0V rail)
+
+This eight-bit register provides the current 3.3V rail voltage in units of 1/32 of a Volt. It is updated around once a second. A value of 160 (5.00V) is nominal. An interrupt is raised when the value exceeds 5.5V (176) or is lower than 4.5V (144).
+
+### Address 0x09 - Power Control
+
+This eight-bit register controls the main DC/DC power supply unit. The Host should disable the DC/DC supply (by writing zero here) if it wishes to power down.
+
+| Bits | Meaning                        |
+| ---- | ------------------------------ |
+| 7-1  | Reserved for future use        |
+| 0    | DC/DC control: 0 = off, 1 = on |
+
+### Address 0x10 - UART Receive/Transmit Buffer
+
+TODO
+
+### Address 0x11 - UART FIFO Control
+
+TODO
+
+### Address 0x12 - UART Control
+
+TODO
+
+### Address 0x13 - UART Status
+
+TODO
+
+### Address 0x14 - UART Baud Rate
+
+TODO
+
+### Address 0x20 - PS/2 Keyboard Receive/Transmit Buffer
+
+TODO
+
+### Address 0x21 - PS/2 Keyboard Control
+
+TODO
+
+### Address 0x22 - PS/2 Keyboard Status
+
+TODO
+
+### Address 0x30 - PS/2 Mouse Receive/Transmit Buffer
+
+TODO
+
+### Address 0x31 - PS/2 Mouse Control
+
+TODO
+
+### Address 0x32 - PS/2 Mouse Status
+
+TODO
+
+### Address 0x50 - I²C Receive/Transmit Buffer
+
+TODO
+
+### Address 0x51 - I²C FIFO Control
+
+TODO
+
+### Address 0x52 - I²C Control
+
+TODO
+
+### Address 0x53 - I²C Status
+
+TODO
+
+### Address 0x54 - I²C Baud Rate
+
+TODO
+
 
 ## Build Requirements
 
