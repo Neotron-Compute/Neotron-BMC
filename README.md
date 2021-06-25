@@ -35,17 +35,17 @@ The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6) micr
 | 03   | PF1  | HOST_nRST   | Reset Output to reset the rest of the system |
 | 06   | PA0  | MON_3V3     | 3.3V rail monitor Input (1.65V nominal)      |
 | 07   | PA1  | MON_5V      | 5.0V rail monitor Input (1.65V nominal)      |
-| 08   | PA2  | LED0        | PWM output for first Status LED              |
-| 09   | PA3  | LED1        | PWM output for second Status LED             |
+| 08   | PA2  | nSYS_RESET  | System Reset Output (active low)             |
+| 09   | PA3  | DC_ON       | PSU Enable Output (active high)              |
 | 10   | PA4  | SPI1_nCS    | SPI Chip Select Input (active low)           |
 | 11   | PA5  | SPI1_SCK    | SPI Clock Input                              |
 | 12   | PA6  | SPI1_CIPO   | SPI Data Output                              |
 | 13   | PA7  | SPI1_COPI   | SPI Data Input                               |
-| 14   | PB0  | BUTTON_nRST | Reset Button Input (active low)              |
-| 15   | PB1  | DC_ON       | PSU Enable Output                            |
+| 14   | PB0  | LED0        | Output for Power LED                         |
+| 15   | PB1  | LED1        | Output for Status LED                        |
 | 18   | PA8  | IRQ_nHOST   | Interrupt Output to the Host (active low)    |
-| 19   | PA9  | I2C1_SCL    | I²C Clock                                    |
-| 20   | PA10 | I2C1_SDA    | I²C Data                                     |
+| 19   | PA9  | USART1_TX   | UART Transmit Output                         |
+| 20   | PA10 | USART1_RX   | UART Receive Input                           |
 | 21   | PA11 | USART1_CTS  | UART Clear-to-Send Output                    |
 | 22   | PA12 | USART1_RTS  | UART Ready-to-Receive Input                  |
 | 23   | PA13 | SWDIO       | SWD Progamming Data Input                    |
@@ -54,8 +54,8 @@ The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6) micr
 | 26   | PB3  | PS2_CLK1    | Mouse Clock Input                            |
 | 27   | PB4  | PS2_DAT0    | Keyboard Data Input                          |
 | 28   | PB5  | PS2_DAT1    | Mouse Data Input                             |
-| 29   | PB6  | USART1_TX   | UART Transmit Output                         |
-| 30   | PB7  | USART1_RX   | UART Receive Input                           |
+| 29   | PB6  | I2C1_SCL    | I²C Clock                                    |
+| 30   | PB7  | I2C1_SDA    | I²C Data                                     |
 
 Note that in the above table, the UART signals are wired as _Data Terminal Equipment (DTE)_ (i.e. like a PC, not like a Modem).
 
