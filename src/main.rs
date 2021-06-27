@@ -34,7 +34,7 @@ const APP: () = {
 		serial: serial::Serial<pac::USART1, PA9<Alternate<AF1>>, PA10<Alternate<AF1>>>,
 	}
 
-	#[init(spawn = [blinker])]
+	#[init(spawn = [led_status_blink])]
 	fn init(ctx: init::Context) -> init::LateResources {
 		defmt::info!("Neotron BMC version {:?} booting", VERSION);
 
@@ -71,7 +71,7 @@ const APP: () = {
 
 		let serial = serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
 
-		ctx.spawn.blinker().unwrap();
+		ctx.spawn.led_status_blink().unwrap();
 
 		led_power.set_high().unwrap();
 
@@ -112,10 +112,12 @@ const APP: () = {
 	// 	}
 	// }
 
-	#[task(resources = [led_status], schedule = [blinker])]
-	fn blinker(ctx: blinker::Context) {
+	#[task(resources = [led_status], schedule = [led_status_blink])]
+	fn led_status_blink(ctx: led_status_blink::Context) {
 		// Use the safe local `static mut` of RTIC
 		static mut LED_STATE: bool = false;
+
+		defmt::info!("blink time {}", ctx.scheduled.counts());
 
 		if *LED_STATE {
 			ctx.resources.led_status.set_low().unwrap();
@@ -124,7 +126,9 @@ const APP: () = {
 			ctx.resources.led_status.set_high().unwrap();
 			*LED_STATE = true;
 		}
-		//ctx.schedule.blinker(ctx.scheduled + PERIOD_MS.millis()).unwrap();
+		ctx.schedule
+			.led_status_blink(ctx.scheduled + PERIOD_MS.millis())
+			.unwrap();
 	}
 
 	// Let it use the USB interrupt as a generic software interrupt.
