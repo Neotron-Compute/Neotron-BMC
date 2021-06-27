@@ -1,4 +1,4 @@
-//! Using STM32F0 TIM6 as monotonic 16 bit timer.
+//! Using STM32F0 TIM3 as monotonic 16 bit timer.
 //!
 //! ## Prescaler Calculations
 //!
@@ -25,33 +25,36 @@ use stm32f0xx_hal::pac;
 /// Implementor of the `rtic::Monotonic` traits and used to consume the timer
 /// to not allow for erroneous configuration.
 ///
-/// This uses TIM6 internally.
-pub struct Tim6Monotonic;
+/// This uses TIM3 internally.
+pub struct Tim3Monotonic;
 
 const CORE_CLOCK: u32 = 48_000_000;
 const PRESCALER: u32 = 6144;
 const HZ: u32 = CORE_CLOCK / PRESCALER;
 
-impl Tim6Monotonic {
+impl Tim3Monotonic {
 	/// Initialize the timer instance.
-	pub fn initialize(timer: pac::TIM6) {
-		// Enable and reset TIM6 in RCC
+	pub fn initialize(timer: pac::TIM3) {
+		// Enable and reset TIM3 in RCC
 		//
-		// Correctness: Since we only modify TIM6 related registers in the RCC
-		// register block, and since we own pac::TIM6, we should be safe.
+		// Correctness: Since we only modify TIM3 related registers in the RCC
+		// register block, and since we own pac::TIM3, we should be safe.
 		unsafe {
 			let rcc = &*pac::RCC::ptr();
 
 			// Enable timer
-			rcc.apb1enr.modify(|_, w| w.tim6en().set_bit());
+			rcc.apb1enr.modify(|_, w| w.tim3en().set_bit());
 
 			// Reset timer
-			rcc.apb1rstr.modify(|_, w| w.tim6rst().set_bit());
-			rcc.apb1rstr.modify(|_, w| w.tim6rst().clear_bit());
+			rcc.apb1rstr.modify(|_, w| w.tim3rst().set_bit());
+			rcc.apb1rstr.modify(|_, w| w.tim3rst().clear_bit());
 		}
 
 		// Set up prescaler
 		timer.psc.write(|w| w.psc().bits(PRESCALER as u16));
+
+		// Update prescaler
+		timer.egr.write(|w| w.ug().update());
 
 		// Enable counter
 		timer.cr1.modify(|_, w| w.cen().set_bit());
@@ -61,7 +64,7 @@ impl Tim6Monotonic {
 	}
 }
 
-impl Monotonic for Tim6Monotonic {
+impl Monotonic for Tim3Monotonic {
 	type Instant = Instant;
 
 	fn ratio() -> rtic::Fraction {
@@ -91,7 +94,7 @@ impl Monotonic for Tim6Monotonic {
 	/// before tasks can start; this is also the case in multi-core applications. User code must
 	/// *never* call this function.
 	unsafe fn reset() {
-		let tim = &*pac::TIM6::ptr();
+		let tim = &*pac::TIM3::ptr();
 
 		// Pause
 		tim.cr1.modify(|_, w| w.cen().clear_bit());
@@ -122,7 +125,7 @@ impl Instant {
 	/// Returns an instant corresponding to "now".
 	pub fn now() -> Self {
 		let now = {
-			let tim = unsafe { &*pac::TIM6::ptr() };
+			let tim = unsafe { &*pac::TIM3::ptr() };
 			tim.cnt.read().cnt().bits()
 		};
 

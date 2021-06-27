@@ -3,7 +3,7 @@
 
 use neotron_bmc as _;
 
-use neotron_bmc::monotonic::{Tim6Monotonic, U16Ext};
+use neotron_bmc::monotonic::{Instant, Tim3Monotonic, U16Ext};
 
 use cortex_m_rt::exception;
 
@@ -24,7 +24,7 @@ static VERSION: &'static str = include_str!(concat!(env!("OUT_DIR"), "/version.t
 
 const PERIOD_MS: u16 = 1000;
 
-#[app(device = crate::pac, peripherals = true,  monotonic = crate::Tim6Monotonic)]
+#[app(device = crate::pac, peripherals = true,  monotonic = crate::Tim3Monotonic)]
 const APP: () = {
 	struct Resources {
 		uart_cts: PA11<Alternate<AF1>>,
@@ -49,8 +49,8 @@ const APP: () = {
 			.sysclk(48.mhz())
 			.freeze(&mut flash);
 
-		defmt::info!("Configuring TIM6 at 7.8125 kHz...");
-		crate::Tim6Monotonic::initialize(dp.TIM6);
+		defmt::info!("Configuring TIM3 at 7.8125 kHz...");
+		crate::Tim3Monotonic::initialize(dp.TIM3);
 
 		defmt::info!("Creating pins...");
 		let gpioa = dp.GPIOA.split(&mut rcc);
@@ -69,7 +69,10 @@ const APP: () = {
 
 		defmt::info!("Creating UART...");
 
-		let serial = serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
+		let mut serial =
+			serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
+
+		serial.listen(serial::Event::Rxne);
 
 		ctx.spawn.led_status_blink().unwrap();
 
@@ -90,29 +93,25 @@ const APP: () = {
 	fn idle(_: idle::Context) -> ! {
 		defmt::info!("Idle is running...");
 		loop {
-			cortex_m::asm::nop();
-			// defmt::info!("Idle is asleep...");
-			// cortex_m::asm::wfi();
-			// defmt::info!("Idle is awake...");
+			cortex_m::asm::wfi();
+			defmt::info!("It is now {}", crate::Instant::now().counts());
 		}
 	}
 
-	// #[task(binds = USART1, resources=[serial])]
-	// fn usart1_interrupt(ctx: usart1_interrupt::Context) {
-	// 	defmt::info!("USART1 IRQ!");
-	// 	// Reading the register clears the RX-Not-Empty-Interrupt flag.
-	// 	match ctx.resources.serial.read()
-	// 	{
-	// 		Ok(b) => {
-	// 			defmt::info!("Read byte {:x}", b);
-	// 		}
-	// 		Err(_) => {
-	// 			defmt::warn!("No byte available?");
-	// 		}
-	// 	}
-	// }
+	#[task(binds = USART1, resources=[serial])]
+	fn usart1_interrupt(ctx: usart1_interrupt::Context) {
+		// Reading the register clears the RX-Not-Empty-Interrupt flag.
+		match ctx.resources.serial.read() {
+			Ok(b) => {
+				defmt::info!("<< UART {:x}", b);
+			}
+			Err(_) => {
+				defmt::warn!("<< UART None?");
+			}
+		}
+	}
 
-	#[task(resources = [led_status], schedule = [led_status_blink])]
+	#[task(schedule = [led_status_blink], resources = [led_status])]
 	fn led_status_blink(ctx: led_status_blink::Context) {
 		// Use the safe local `static mut` of RTIC
 		static mut LED_STATE: bool = false;
@@ -126,9 +125,9 @@ const APP: () = {
 			ctx.resources.led_status.set_high().unwrap();
 			*LED_STATE = true;
 		}
-		ctx.schedule
-			.led_status_blink(ctx.scheduled + PERIOD_MS.millis())
-			.unwrap();
+		let next = ctx.scheduled + PERIOD_MS.millis();
+		defmt::info!("Next blink at {}", next.counts());
+		ctx.schedule.led_status_blink(next).unwrap();
 	}
 
 	// Let it use the USB interrupt as a generic software interrupt.
