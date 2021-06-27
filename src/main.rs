@@ -3,108 +3,145 @@
 
 use neotron_bmc as _;
 
-use hal::{i2c, pac, prelude::*, serial, spi};
-use stm32f0xx_hal as hal;
+use neotron_bmc::monotonic::{Tim6Monotonic, U16Ext};
+
+use cortex_m_rt::exception;
+
+use rtic::app;
+
+use stm32f0xx_hal::{
+	gpio::gpioa::{PA10, PA11, PA12, PA9},
+	gpio::gpiob::{PB0, PB1},
+	gpio::{Alternate, Output, PushPull, AF1},
+	pac,
+	prelude::*,
+	serial,
+};
+
+use cortex_m::interrupt::free as disable_interrupts;
 
 static VERSION: &'static str = include_str!(concat!(env!("OUT_DIR"), "/version.txt"));
 
-/// Holds all the I/O pins in our system
-#[allow(unused)]
-struct Pins {
-	// spi_clk: hal::gpio::gpioa::PA5<hal::gpio::Alternate<hal::gpio::AF0>>,
-	// spi_cipo: hal::gpio::gpioa::PA6<hal::gpio::Alternate<hal::gpio::AF0>>,
-	// spi_copi: hal::gpio::gpioa::PA7<hal::gpio::Alternate<hal::gpio::AF0>>,
-	// i2c_scl: hal::gpio::gpiob::PB6<hal::gpio::Alternate<hal::gpio::AF4>>,
-	// i2c_sda: hal::gpio::gpiob::PB7<hal::gpio::Alternate<hal::gpio::AF4>>,
-	uart_tx: hal::gpio::gpioa::PA9<hal::gpio::Alternate<hal::gpio::AF1>>,
-	uart_rx: hal::gpio::gpioa::PA10<hal::gpio::Alternate<hal::gpio::AF1>>,
-	uart_cts: hal::gpio::gpioa::PA11<hal::gpio::Alternate<hal::gpio::AF1>>,
-	uart_rts: hal::gpio::gpioa::PA12<hal::gpio::Alternate<hal::gpio::AF1>>,
-	led_power: hal::gpio::gpiob::PB0<hal::gpio::Output<hal::gpio::PushPull>>,
-	led_status: hal::gpio::gpiob::PB1<hal::gpio::Output<hal::gpio::PushPull>>,
-}
+const PERIOD_MS: u16 = 1000;
 
-#[cortex_m_rt::entry]
-fn main() -> ! {
-	defmt::info!("Neotron BMC version {:?} booting", VERSION);
-
-	let p = pac::Peripherals::take().unwrap();
-
-	// Configure the clocks.
-	// We have no external crystal, and instead run from the High Speed Internal Oscillator.
-	let mut flash = p.FLASH;
-	let mut rcc = p
-		.RCC
-		.configure()
-		.hclk(48.mhz())
-		.pclk(48.mhz())
-		.sysclk(48.mhz())
-		.freeze(&mut flash);
-
-	defmt::info!("Clocks are clocked");
-
-	let gpioa = p.GPIOA.split(&mut rcc);
-	let gpiob = p.GPIOB.split(&mut rcc);
-
-	let mut pins: Pins = cortex_m::interrupt::free(move |cs| {
-		Pins {
-			// SPI pins
-			// spi_clk: gpioa.pa5.into_alternate_af0(cs),
-			// spi_cipo: gpioa.pa6.into_alternate_af0(cs),
-			// spi_copi: gpioa.pa7.into_alternate_af0(cs),
-			// I²C pins
-			// i2c_scl: gpiob.pb6.into_alternate_af4(cs),
-			// i2c_sda: gpiob.pb7.into_alternate_af4(cs),
-			// USART pins
-			uart_tx: gpioa.pa9.into_alternate_af1(cs),
-			uart_rx: gpioa.pa10.into_alternate_af1(cs),
-			uart_cts: gpioa.pa11.into_alternate_af1(cs),
-			uart_rts: gpioa.pa12.into_alternate_af1(cs),
-			// LED pins
-			led_power: gpiob.pb0.into_push_pull_output(cs),
-			led_status: gpiob.pb1.into_push_pull_output(cs),
-		}
-	});
-
-	// // Configure UART. Pick some default baud rate - we can change it later
-	let mut serial = serial::Serial::usart1(
-		p.USART1,
-		(pins.uart_tx, pins.uart_rx),
-		115_200.bps(),
-		&mut rcc,
-	);
-
-	use core::fmt::Write;
-
-	loop {
-		serial.write_str("Hello, world!\r\n").unwrap();
-
-		defmt::info!("Off Off");
-
-		pins.led_power.set_low().unwrap();
-		pins.led_status.set_low().unwrap();
-
-		cortex_m::asm::delay(6_000_000);
-
-		defmt::info!("Off On");
-
-		pins.led_power.set_low().unwrap();
-		pins.led_status.set_high().unwrap();
-
-		cortex_m::asm::delay(6_000_000);
-
-		defmt::info!("On Off");
-
-		pins.led_power.set_high().unwrap();
-		pins.led_status.set_low().unwrap();
-
-		cortex_m::asm::delay(6_000_000);
-
-		defmt::info!("On On");
-
-		pins.led_power.set_high().unwrap();
-		pins.led_status.set_high().unwrap();
-
-		cortex_m::asm::delay(6_000_000);
+#[app(device = crate::pac, peripherals = true,  monotonic = crate::Tim6Monotonic)]
+const APP: () = {
+	struct Resources {
+		uart_cts: PA11<Alternate<AF1>>,
+		uart_rts: PA12<Alternate<AF1>>,
+		led_power: PB0<Output<PushPull>>,
+		led_status: PB1<Output<PushPull>>,
+		serial: serial::Serial<pac::USART1, PA9<Alternate<AF1>>, PA10<Alternate<AF1>>>,
 	}
+
+	#[init(spawn = [blinker])]
+	fn init(ctx: init::Context) -> init::LateResources {
+		defmt::info!("Neotron BMC version {:?} booting", VERSION);
+
+		let dp: pac::Peripherals = ctx.device;
+
+		let mut flash = dp.FLASH;
+		let mut rcc = dp
+			.RCC
+			.configure()
+			.hclk(48.mhz())
+			.pclk(48.mhz())
+			.sysclk(48.mhz())
+			.freeze(&mut flash);
+
+		defmt::info!("Configuring TIM6 at 7.8125 kHz...");
+		crate::Tim6Monotonic::initialize(dp.TIM6);
+
+		defmt::info!("Creating pins...");
+		let gpioa = dp.GPIOA.split(&mut rcc);
+		let gpiob = dp.GPIOB.split(&mut rcc);
+		let (uart_tx, uart_rx, uart_cts, uart_rts, mut led_power, led_status) =
+			disable_interrupts(|cs| {
+				(
+					gpioa.pa9.into_alternate_af1(cs),
+					gpioa.pa10.into_alternate_af1(cs),
+					gpioa.pa11.into_alternate_af1(cs),
+					gpioa.pa12.into_alternate_af1(cs),
+					gpiob.pb0.into_push_pull_output(cs),
+					gpiob.pb1.into_push_pull_output(cs),
+				)
+			});
+
+		defmt::info!("Creating UART...");
+
+		let serial = serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
+
+		ctx.spawn.blinker().unwrap();
+
+		led_power.set_high().unwrap();
+
+		defmt::info!("Init complete!");
+
+		init::LateResources {
+			serial,
+			uart_cts,
+			uart_rts,
+			led_power,
+			led_status,
+		}
+	}
+
+	#[idle(resources = [])]
+	fn idle(_: idle::Context) -> ! {
+		defmt::info!("Idle is running...");
+		loop {
+			cortex_m::asm::nop();
+			// defmt::info!("Idle is asleep...");
+			// cortex_m::asm::wfi();
+			// defmt::info!("Idle is awake...");
+		}
+	}
+
+	// #[task(binds = USART1, resources=[serial])]
+	// fn usart1_interrupt(ctx: usart1_interrupt::Context) {
+	// 	defmt::info!("USART1 IRQ!");
+	// 	// Reading the register clears the RX-Not-Empty-Interrupt flag.
+	// 	match ctx.resources.serial.read()
+	// 	{
+	// 		Ok(b) => {
+	// 			defmt::info!("Read byte {:x}", b);
+	// 		}
+	// 		Err(_) => {
+	// 			defmt::warn!("No byte available?");
+	// 		}
+	// 	}
+	// }
+
+	#[task(resources = [led_status], schedule = [blinker])]
+	fn blinker(ctx: blinker::Context) {
+		// Use the safe local `static mut` of RTIC
+		static mut LED_STATE: bool = false;
+
+		if *LED_STATE {
+			ctx.resources.led_status.set_low().unwrap();
+			*LED_STATE = false;
+		} else {
+			ctx.resources.led_status.set_high().unwrap();
+			*LED_STATE = true;
+		}
+		//ctx.schedule.blinker(ctx.scheduled + PERIOD_MS.millis()).unwrap();
+	}
+
+	// Let it use the USB interrupt as a generic software interrupt.
+	extern "C" {
+		fn USB();
+	}
+};
+
+#[exception]
+unsafe fn DefaultHandler(value: i16) {
+	defmt::panic!("DefaultHandler({})", value);
 }
+
+// SPI pins
+// spi_clk: gpioa.pa5.into_alternate_af0(cs),
+// spi_cipo: gpioa.pa6.into_alternate_af0(cs),
+// spi_copi: gpioa.pa7.into_alternate_af0(cs),
+// I²C pins
+// i2c_scl: gpiob.pb6.into_alternate_af4(cs),
+// i2c_sda: gpiob.pb7.into_alternate_af4(cs),
