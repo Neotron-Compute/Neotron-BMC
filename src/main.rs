@@ -73,9 +73,9 @@ const APP: () = {
 	///
 	/// Sets up the hardware and spawns the regular tasks.
 	///
-	/// * Task `led_status_blink` - blinks the LED
+	/// * Task `led_power_blink` - blinks the LED
 	/// * Task `button_poll` - checks the power and reset buttons
-	#[init(spawn = [led_status_blink, button_poll])]
+	#[init(spawn = [led_power_blink, button_poll])]
 	fn init(ctx: init::Context) -> init::LateResources {
 		defmt::info!("Neotron BMC version {:?} booting", VERSION);
 
@@ -126,7 +126,7 @@ const APP: () = {
 
 		serial.listen(serial::Event::Rxne);
 
-		ctx.spawn.led_status_blink().unwrap();
+		ctx.spawn.led_power_blink().unwrap();
 
 		ctx.spawn.button_poll().unwrap();
 
@@ -182,29 +182,34 @@ const APP: () = {
 	///
 	/// This task is called periodically. We check whether the status LED is currently on or off,
 	/// and set it to the opposite. This makes the LED blink.
-	#[task(schedule = [led_status_blink], resources = [led_status])]
-	fn led_status_blink(ctx: led_status_blink::Context) {
+	#[task(schedule = [led_power_blink], resources = [led_power, dc_power_enabled])]
+	fn led_power_blink(ctx: led_power_blink::Context) {
 		// Use the safe local `static mut` of RTIC
 		static mut LED_STATE: bool = false;
 
-		defmt::trace!("blink time {}", ctx.scheduled.counts());
-
-		if *LED_STATE {
-			ctx.resources.led_status.set_low().unwrap();
-			*LED_STATE = false;
-		} else {
-			ctx.resources.led_status.set_high().unwrap();
-			*LED_STATE = true;
+		if *ctx.resources.dc_power_enabled == DcPowerState::Off {
+			defmt::trace!("blink time {}", ctx.scheduled.counts());
+			if *LED_STATE {
+				ctx.resources.led_power.set_low().unwrap();
+				*LED_STATE = false;
+			} else {
+				ctx.resources.led_power.set_high().unwrap();
+				*LED_STATE = true;
+			}
+			let next = ctx.scheduled + LED_PERIOD_MS.millis();
+			defmt::trace!("Next blink at {}", next.counts());
+			ctx.schedule.led_power_blink(next).unwrap();
 		}
-		let next = ctx.scheduled + LED_PERIOD_MS.millis();
-		defmt::trace!("Next blink at {}", next.counts());
-		ctx.schedule.led_status_blink(next).unwrap();
 	}
 
 	/// This task polls our power and reset buttons.
 	///
 	/// We poll them rather than setting up an interrupt as we need to debounce them, which involves waiting a short period and checking them again. Given that we have to do that, we might as well not bother with the interrupt.
-	#[task(schedule = [button_poll], resources = [led_power, button_power, button_power_short_press, button_power_long_press, dc_power_enabled])]
+	#[task(
+		spawn = [led_power_blink],
+		schedule = [button_poll],
+		resources = [led_power, button_power, button_power_short_press, button_power_long_press, dc_power_enabled]
+	)]
 	fn button_poll(ctx: button_poll::Context) {
 		// Poll button
 		let pressed: bool = ctx.resources.button_power.is_low().unwrap();
@@ -256,6 +261,7 @@ const APP: () = {
 				defmt::info!("Power off!");
 				// TODO: Put system in reset here
 				// TODO: Disable DC PSU here
+				ctx.spawn.led_power_blink().unwrap();
 			}
 		}
 
