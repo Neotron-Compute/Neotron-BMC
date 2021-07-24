@@ -11,7 +11,7 @@
 use cortex_m::interrupt::free as disable_interrupts;
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA9},
+	gpio::gpioa::{PA10, PA11, PA12, PA2, PA3, PA9},
 	gpio::gpiob::{PB0, PB1},
 	gpio::gpiof::{PF0, PF1},
 	gpio::{Alternate, Input, Output, PullUp, PushPull, AF1},
@@ -54,19 +54,24 @@ const APP: () = {
 		/// The FTDI UART header (J105)
 		serial: serial::Serial<pac::USART1, PA9<Alternate<AF1>>, PA10<Alternate<AF1>>>,
 		/// The Clear-To-Send line on the FTDI UART header (which the serial object can't handle)
-		uart_cts: PA11<Alternate<AF1>>,
+		pin_uart_cts: PA11<Alternate<AF1>>,
 		/// The Ready-To-Receive line on the FTDI UART header (which the serial object can't handle)
-		uart_rts: PA12<Alternate<AF1>>,
+		pin_uart_rts: PA12<Alternate<AF1>>,
 		/// The power button
 		button_power: PF0<Input<PullUp>>,
 		/// The reset button
 		button_reset: PF1<Input<PullUp>>,
 		/// Tracks power button state for short presses. 75ms x 2 = 150ms is a short press
-		button_power_short_press: debouncr::Debouncer<u8, debouncr::Repeat2>,
+		press_button_power_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Tracks power button state for long presses. 75ms x 16 = 1200ms is a long press
-		button_power_long_press: debouncr::Debouncer<u16, debouncr::Repeat16>,
+		press_button_power_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
 		/// Tracks DC power state
-		dc_power_enabled: DcPowerState,
+		state_dc_power_enabled: DcPowerState,
+		/// Controls the DC-DC PSU
+		pin_dc_on: PA3<Output<PushPull>>,
+		/// Controls the Reset signal across the main board, putting all the
+		/// chips (except this BMC!) in reset when pulled low.
+		pin_sys_reset: PA2<Output<PushPull>>,
 	}
 
 	/// The entry point to our application.
@@ -100,12 +105,14 @@ const APP: () = {
 		let (
 			uart_tx,
 			uart_rx,
-			uart_cts,
-			uart_rts,
+			pin_uart_cts,
+			pin_uart_rts,
 			mut led_power,
 			led_status,
 			button_power,
 			button_reset,
+			mut pin_dc_on,
+			mut pin_sys_reset,
 		) = disable_interrupts(|cs| {
 			(
 				gpioa.pa9.into_alternate_af1(cs),
@@ -116,8 +123,13 @@ const APP: () = {
 				gpiob.pb1.into_push_pull_output(cs),
 				gpiof.pf0.into_pull_up_input(cs),
 				gpiof.pf1.into_pull_up_input(cs),
+				gpioa.pa3.into_push_pull_output(cs),
+				gpioa.pa2.into_push_pull_output(cs),
 			)
 		});
+
+		pin_sys_reset.set_low().unwrap();
+		pin_dc_on.set_low().unwrap();
 
 		defmt::info!("Creating UART...");
 
@@ -136,15 +148,17 @@ const APP: () = {
 
 		init::LateResources {
 			serial,
-			uart_cts,
-			uart_rts,
+			pin_uart_cts,
+			pin_uart_rts,
 			led_power,
 			led_status,
 			button_power,
 			button_reset,
-			button_power_short_press: debouncr::debounce_2(false),
-			button_power_long_press: debouncr::debounce_16(false),
-			dc_power_enabled: DcPowerState::Off,
+			press_button_power_short: debouncr::debounce_2(false),
+			press_button_power_long: debouncr::debounce_16(false),
+			state_dc_power_enabled: DcPowerState::Off,
+			pin_dc_on,
+			pin_sys_reset,
 		}
 	}
 
@@ -204,58 +218,50 @@ const APP: () = {
 	/// This task polls our power and reset buttons.
 	///
 	/// We poll them rather than setting up an interrupt as we need to debounce them, which involves waiting a short period and checking them again. Given that we have to do that, we might as well not bother with the interrupt.
-	#[task(schedule = [button_poll], resources = [led_power, button_power, button_power_short_press, button_power_long_press, dc_power_enabled])]
+	#[task(
+		schedule = [button_poll],
+		resources = [
+			led_power, button_power, press_button_power_short, press_button_power_long, state_dc_power_enabled,
+			pin_sys_reset, pin_dc_on
+		]
+	)]
 	fn button_poll(ctx: button_poll::Context) {
 		// Poll button
 		let pressed: bool = ctx.resources.button_power.is_low().unwrap();
 
 		// Update state
-		let short_edge = ctx.resources.button_power_short_press.update(pressed);
-		let long_edge = ctx.resources.button_power_long_press.update(pressed);
+		let short_edge = ctx.resources.press_button_power_short.update(pressed);
+		let long_edge = ctx.resources.press_button_power_long.update(pressed);
 
 		// Dispatch event
-		if short_edge == Some(debouncr::Edge::Rising) {
-			defmt::trace!(
-				"Power short press in! {}",
-				*ctx.resources.dc_power_enabled as u8
-			);
-			if *ctx.resources.dc_power_enabled == DcPowerState::Off {
-				*ctx.resources.dc_power_enabled = DcPowerState::Starting;
+		match (long_edge, short_edge, *ctx.resources.state_dc_power_enabled) {
+			(None, Some(debouncr::Edge::Rising), DcPowerState::Off) => {
+				defmt::info!("Power button pressed whilst off.");
+				// Button pressed - power on system
+				*ctx.resources.state_dc_power_enabled = DcPowerState::Starting;
 				ctx.resources.led_power.set_high().unwrap();
 				defmt::info!("Power on!");
-				// TODO: Enable DC PSU here
+				ctx.resources.pin_dc_on.set_high().unwrap();
 				// TODO: Start monitoring 3.3V and 5.0V rails here
 				// TODO: Take system out of reset when 3.3V and 5.0V are good
+				ctx.resources.pin_sys_reset.set_high().unwrap();
 			}
-		} else if short_edge == Some(debouncr::Edge::Falling) {
-			defmt::trace!(
-				"Power short press out! {}",
-				*ctx.resources.dc_power_enabled as u8
-			);
-			match *ctx.resources.dc_power_enabled {
-				DcPowerState::Starting => {
-					*ctx.resources.dc_power_enabled = DcPowerState::On;
-				}
-				DcPowerState::On => {
-					// TODO: Tell host that power off was requested
-				}
-				DcPowerState::Off => {
-					// Ignore
-				}
+			(None, Some(debouncr::Edge::Falling), DcPowerState::Starting) => {
+				defmt::info!("Power button released.");
+				// Button released after power on
+				*ctx.resources.state_dc_power_enabled = DcPowerState::On;
 			}
-		}
-
-		if long_edge == Some(debouncr::Edge::Rising) {
-			defmt::trace!(
-				"Power long press in! {}",
-				*ctx.resources.dc_power_enabled as u8
-			);
-			if *ctx.resources.dc_power_enabled == DcPowerState::On {
-				*ctx.resources.dc_power_enabled = DcPowerState::Off;
+			(Some(debouncr::Edge::Rising), None, DcPowerState::On) => {
+				defmt::info!("Power button held whilst on.");
+				*ctx.resources.state_dc_power_enabled = DcPowerState::Off;
 				ctx.resources.led_power.set_low().unwrap();
 				defmt::info!("Power off!");
-				// TODO: Put system in reset here
-				// TODO: Disable DC PSU here
+				ctx.resources.pin_sys_reset.set_low().unwrap();
+				// TODO: Wait for 100ms for chips to stop?
+				ctx.resources.pin_dc_on.set_low().unwrap();
+			}
+			_ => {
+				// Do nothing
 			}
 		}
 
