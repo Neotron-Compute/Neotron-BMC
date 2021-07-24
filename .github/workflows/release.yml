@@ -32,7 +32,7 @@ jobs:
         with:
           tag_name: ${{ github.ref }}
           release_name: Release ${{ steps.branch_name.outputs.SOURCE_TAG }}
-          draft: true
+          draft: false
           prerelease: false
       - name: Upload files to Release
         uses: softprops/action-gh-release@v1
