@@ -32,7 +32,7 @@ The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6) micr
 | Pin  | Name | Signal      | Function                                     |
 | :--- | :--- | :---------- | :------------------------------------------- |
 | 02   | PF0  | BUTTON_nPWR | Power Button Input (active low)              |
-| 03   | PF1  | HOST_nRST   | Reset Output to reset the rest of the system |
+| 03   | PF1  | BUTTON_nRST | Reset Button Input (active low)              |
 | 06   | PA0  | MON_3V3     | 3.3V rail monitor Input (1.65V nominal)      |
 | 07   | PA1  | MON_5V      | 5.0V rail monitor Input (1.65V nominal)      |
 | 08   | PA2  | nSYS_RESET  | System Reset Output (active low)             |
