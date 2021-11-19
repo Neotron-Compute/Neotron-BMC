@@ -11,10 +11,10 @@
 use cortex_m::interrupt::free as disable_interrupts;
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA2, PA3, PA9},
-	gpio::gpiob::{PB0, PB1},
+	gpio::gpioa::{PA10, PA11, PA12, PA2, PA3, PA9, PA15},
+	gpio::gpiob::{PB0, PB1, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
-	gpio::{Alternate, Input, Output, PullUp, PushPull, AF1},
+	gpio::{Alternate, Input, Output, Floating, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
 	serial,
@@ -72,6 +72,18 @@ const APP: () = {
 		/// Controls the Reset signal across the main board, putting all the
 		/// chips (except this BMC!) in reset when pulled low.
 		pin_sys_reset: PA2<Output<PushPull>>,
+		/// Clock pin for PS/2 Keyboard port
+		ps2_clk0: PA15<Input<Floating>>,
+		/// Clock pin for PS/2 Mouse port
+		ps2_clk1: PB3<Input<Floating>>,
+		/// Data pin for PS/2 Keyboard port
+		ps2_dat0: PB4<Input<Floating>>,
+		/// Data pin for PS/2 Mouse port
+		ps2_dat1: PB5<Input<Floating>>,
+		/// The external interrupt peripheral
+		exti: pac::EXTI,
+		/// Our PS/2 keyboard decoder
+		kb: pc_keyboard::Keyboard<pc_keyboard::layouts::Uk105Key, pc_keyboard::ScancodeSet2>
 	}
 
 	/// The entry point to our application.
@@ -113,6 +125,10 @@ const APP: () = {
 			button_reset,
 			mut pin_dc_on,
 			mut pin_sys_reset,
+			ps2_clk0,
+			ps2_clk1,
+			ps2_dat0,
+			ps2_dat1,
 		) = disable_interrupts(|cs| {
 			(
 				gpioa.pa9.into_alternate_af1(cs),
@@ -125,6 +141,10 @@ const APP: () = {
 				gpiof.pf1.into_pull_up_input(cs),
 				gpioa.pa3.into_push_pull_output(cs),
 				gpioa.pa2.into_push_pull_output(cs),
+				gpioa.pa15.into_floating_input(cs),
+				gpiob.pb3.into_floating_input(cs),
+				gpiob.pb4.into_floating_input(cs),
+				gpiob.pb5.into_floating_input(cs),
 			)
 		});
 
@@ -144,6 +164,14 @@ const APP: () = {
 
 		led_power.set_low().unwrap();
 
+		// Set EXTI15 to use PORT A (PA15)
+		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15() );
+
+		// Enable EXTI15 interrupt as external falling edge
+		dp.EXTI.imr.modify(|_r, w| w.mr15().set_bit());
+		dp.EXTI.emr.modify(|_r, w| w.mr15().set_bit());
+		dp.EXTI.ftsr.modify(|_r, w| w.tr15().set_bit());
+
 		defmt::info!("Init complete!");
 
 		init::LateResources {
@@ -159,6 +187,12 @@ const APP: () = {
 			state_dc_power_enabled: DcPowerState::Off,
 			pin_dc_on,
 			pin_sys_reset,
+			ps2_clk0,
+			ps2_clk1,
+			ps2_dat0,
+			ps2_dat1,
+			exti: dp.EXTI,
+			kb: pc_keyboard::Keyboard::new(pc_keyboard::layouts::Uk105Key, pc_keyboard::ScancodeSet2, pc_keyboard::HandleControl::MapLettersToUnicode)
 		}
 	}
 
@@ -173,6 +207,24 @@ const APP: () = {
 			cortex_m::asm::wfi();
 			defmt::trace!("It is now {}", crate::Instant::now().counts());
 		}
+	}
+
+	/// This is the PS/2 Keyboard task.
+	///
+	/// It fires when there is a falling edge on the PS/2 Keyboard clock pin.
+	#[task(binds = EXTI4_15, resources=[ps2_clk0, ps2_dat0, exti, kb])]
+	fn exti4_15_interrupt(ctx: exti4_15_interrupt::Context) {
+		match ctx.resources.kb.add_bit(ctx.resources.ps2_dat0.is_high().unwrap()) {
+			Err(e) => {
+				defmt::warn!("Error decoding kb: {}", e as usize);
+			}
+			Ok(None) => {}
+			Ok(Some(evt)) => {
+				defmt::info!("Got event core={}, state={}", evt.code as usize, evt.state as usize);
+			}
+		}
+		// Clear the pending flag
+		ctx.resources.exti.pr.write(|w| w.pr15().set_bit());
 	}
 
 	/// This is the USART1 task.
