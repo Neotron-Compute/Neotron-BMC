@@ -11,10 +11,10 @@
 use cortex_m::interrupt::free as disable_interrupts;
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA2, PA3, PA9, PA15},
+	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA9},
 	gpio::gpiob::{PB0, PB1, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
-	gpio::{Alternate, Input, Output, Floating, PullUp, PushPull, AF1},
+	gpio::{Alternate, Floating, Input, Output, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
 	serial,
@@ -83,7 +83,7 @@ const APP: () = {
 		/// The external interrupt peripheral
 		exti: pac::EXTI,
 		/// Our PS/2 keyboard decoder
-		kb: pc_keyboard::Keyboard<pc_keyboard::layouts::Uk105Key, pc_keyboard::ScancodeSet2>
+		kb: pc_keyboard::Keyboard<pc_keyboard::layouts::Uk105Key, pc_keyboard::ScancodeSet2>,
 	}
 
 	/// The entry point to our application.
@@ -165,7 +165,7 @@ const APP: () = {
 		led_power.set_low().unwrap();
 
 		// Set EXTI15 to use PORT A (PA15)
-		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15() );
+		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
 
 		// Enable EXTI15 interrupt as external falling edge
 		dp.EXTI.imr.modify(|_r, w| w.mr15().set_bit());
@@ -192,7 +192,11 @@ const APP: () = {
 			ps2_dat0,
 			ps2_dat1,
 			exti: dp.EXTI,
-			kb: pc_keyboard::Keyboard::new(pc_keyboard::layouts::Uk105Key, pc_keyboard::ScancodeSet2, pc_keyboard::HandleControl::MapLettersToUnicode)
+			kb: pc_keyboard::Keyboard::new(
+				pc_keyboard::layouts::Uk105Key,
+				pc_keyboard::ScancodeSet2,
+				pc_keyboard::HandleControl::MapLettersToUnicode,
+			),
 		}
 	}
 
@@ -214,13 +218,21 @@ const APP: () = {
 	/// It fires when there is a falling edge on the PS/2 Keyboard clock pin.
 	#[task(binds = EXTI4_15, resources=[ps2_clk0, ps2_dat0, exti, kb])]
 	fn exti4_15_interrupt(ctx: exti4_15_interrupt::Context) {
-		match ctx.resources.kb.add_bit(ctx.resources.ps2_dat0.is_high().unwrap()) {
+		match ctx
+			.resources
+			.kb
+			.add_bit(ctx.resources.ps2_dat0.is_high().unwrap())
+		{
 			Err(e) => {
 				defmt::warn!("Error decoding kb: {}", e as usize);
 			}
 			Ok(None) => {}
 			Ok(Some(evt)) => {
-				defmt::info!("Got event core={}, state={}", evt.code as usize, evt.state as usize);
+				defmt::info!(
+					"Got event core={}, state={}",
+					evt.code as usize,
+					evt.state as usize
+				);
 			}
 		}
 		// Clear the pending flag
