@@ -19,6 +19,7 @@ panic-probe = { version = "0.2.0", features = ["print-defmt"] }
 # Use this line if you have an STM32F031K6T6
 stm32f0xx-hal = { version = "0.17", features = ["stm32f031", "rt"] }
 debouncr = "0.2"
+pc-keyboard = "0.5"
 
 [features]
 # set logging levels here

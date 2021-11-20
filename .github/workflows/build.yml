@@ -15,4 +15,4 @@ jobs:
     - name: Install flip-link
       run: cd / && cargo install flip-link
     - name: Build
-      run: cargo build --verbose --target=thumbv6m-none-eabi
+      run: cargo build --release --verbose --target=thumbv6m-none-eabi
