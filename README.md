@@ -57,7 +57,7 @@ The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6) micr
 | 29   | PB6  | I2C1_SCL    | I²C Clock                                    |
 | 30   | PB7  | I2C1_SDA    | I²C Data                                     |
 
-Note that in the above table, the UART signals are wired as _Data Terminal Equipment (DTE)_ (i.e. like a PC, not like a Modem).
+Note that in the above table, the UART signals are wired as _Data Terminal Equipment (DTE)_ (i.e. like a PC, not like a Modem). Connect the NMBC *UART Transmit Output* pin to the *Input* pin of something like an FTDI TTL-232R-3V3 cable.
 
 This design should also be pin-compatible with the following SoCs (although this firmware may need changes):
 
