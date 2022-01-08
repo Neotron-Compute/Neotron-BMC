@@ -22,11 +22,11 @@ impl<const FREQ: u32> MonoTimer<pac::TIM2, FREQ> {
 			let rcc = &*pac::RCC::ptr();
 
 			// Enable timer
-			rcc.apb1enr.modify(|_, w| w.tim3en().set_bit());
+			rcc.apb1enr.modify(|_, w| w.tim2en().set_bit());
 
 			// Reset timer
-			rcc.apb1rstr.modify(|_, w| w.tim3rst().set_bit());
-			rcc.apb1rstr.modify(|_, w| w.tim3rst().clear_bit());
+			rcc.apb1rstr.modify(|_, w| w.tim2rst().set_bit());
+			rcc.apb1rstr.modify(|_, w| w.tim2rst().clear_bit());
 		}
 
 		let prescaler = (clocks.pclk().0 / FREQ) - 1;

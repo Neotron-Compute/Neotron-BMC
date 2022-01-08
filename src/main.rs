@@ -55,7 +55,7 @@ pub enum DcPowerState {
 /// * Stop Bit
 #[derive(Debug)]
 pub struct Ps2Decoder {
-	bit_count: u8,
+	bit_mask: u16,
 	collector: u16,
 }
 
@@ -71,22 +71,22 @@ mod app {
 	use fugit::ExtU32;
 
 	#[shared]
-	struct Resources {
+	struct Shared {
 		/// The power LED (D1101)
 		#[lock_free]
 		led_power: PB0<Output<PushPull>>,
 		/// The status LED (D1102)
 		#[lock_free]
-		led_status: PB1<Output<PushPull>>,
+		_led_status: PB1<Output<PushPull>>,
 		/// The FTDI UART header (J105)
 		#[lock_free]
 		serial: serial::Serial<pac::USART1, PA9<Alternate<AF1>>, PA10<Alternate<AF1>>>,
 		/// The Clear-To-Send line on the FTDI UART header (which the serial object can't handle)
 		#[lock_free]
-		pin_uart_cts: PA11<Alternate<AF1>>,
+		_pin_uart_cts: PA11<Alternate<AF1>>,
 		/// The Ready-To-Receive line on the FTDI UART header (which the serial object can't handle)
 		#[lock_free]
-		pin_uart_rts: PA12<Alternate<AF1>>,
+		_pin_uart_rts: PA12<Alternate<AF1>>,
 		/// The power button
 		#[lock_free]
 		button_power: PF0<Input<PullUp>>,
@@ -108,25 +108,25 @@ mod app {
 		ps2_clk0: PA15<Input<Floating>>,
 		/// Clock pin for PS/2 Mouse port
 		#[lock_free]
-		ps2_clk1: PB3<Input<Floating>>,
+		_ps2_clk1: PB3<Input<Floating>>,
 		/// Data pin for PS/2 Keyboard port
 		#[lock_free]
 		ps2_dat0: PB4<Input<Floating>>,
 		/// Data pin for PS/2 Mouse port
 		#[lock_free]
-		ps2_dat1: PB5<Input<Floating>>,
+		_ps2_dat1: PB5<Input<Floating>>,
 		/// The external interrupt peripheral
 		#[lock_free]
 		exti: pac::EXTI,
 		/// Our register state
 		#[lock_free]
-		register_state: RegisterState,
+		_register_state: RegisterState,
 		/// Keyboard bytes sink
 		#[lock_free]
-		kb_c: Consumer<'static, u16, 8>,
+		kb_q_out: Consumer<'static, u16, 8>,
 		/// Keyboard bytes source
 		#[lock_free]
-		kb_p: Producer<'static, u16, 8>,
+		kb_q_in: Producer<'static, u16, 8>,
 	}
 
 	#[local]
@@ -135,10 +135,10 @@ mod app {
 		press_button_power_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Tracks power button state for long presses. 75ms x 16 = 1200ms is a long press
 		press_button_power_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
+		/// Tracks reset button state for long presses. 75ms x 16 = 1200ms is a long press
+		press_button_reset_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
 		/// Keyboard PS/2 decoder
 		kb_decoder: Ps2Decoder,
-		/// Mouse PS/2 decoder
-		ms_decoder: Ps2Decoder,
 	}
 
 	#[monotonic(binds = TIM2, default = true)]
@@ -151,7 +151,7 @@ mod app {
 	/// * Task `led_power_blink` - blinks the LED
 	/// * Task `button_poll` - checks the power and reset buttons
 	#[init(local = [ queue: Queue<u16, 8> = Queue::new()])]
-	fn init(ctx: init::Context) -> (Resources, Local, init::Monotonics) {
+	fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
 		defmt::info!("Neotron BMC version {:?} booting", VERSION);
 
 		let dp: pac::Peripherals = ctx.device;
@@ -172,21 +172,29 @@ mod app {
 		let gpioa = dp.GPIOA.split(&mut rcc);
 		let gpiob = dp.GPIOB.split(&mut rcc);
 		let gpiof = dp.GPIOF.split(&mut rcc);
+		// We have to have the closure return a tuple of all our configured
+		// pins because by taking fields from `gpioa`, `gpiob`, etc, we leave
+		// them as partial structures. This prevents us from having a call to
+		// `disable_interrupts` for each pin. We can't simply do the `let foo
+		// = ` inside the closure either, as the pins would be dropped when
+		// the closure ended. So, we have this slightly awkward syntax
+		// instead. Do ensure the pins and the variables line-up correctly;
+		// order is important!
 		let (
 			uart_tx,
 			uart_rx,
-			pin_uart_cts,
-			pin_uart_rts,
+			_pin_uart_cts,
+			_pin_uart_rts,
 			mut led_power,
-			mut led_status,
+			mut _led_status,
 			button_power,
 			button_reset,
 			mut pin_dc_on,
 			mut pin_sys_reset,
 			ps2_clk0,
-			ps2_clk1,
+			_ps2_clk1,
 			ps2_dat0,
-			ps2_dat1,
+			_ps2_dat1,
 		) = disable_interrupts(|cs| {
 			(
 				gpioa.pa9.into_alternate_af1(cs),
@@ -216,12 +224,8 @@ mod app {
 
 		serial.listen(serial::Event::Rxne);
 
-		led_power_blink::spawn().unwrap();
-
-		button_poll::spawn().unwrap();
-
 		led_power.set_low().unwrap();
-		led_status.set_low().unwrap();
+		_led_status.set_low().unwrap();
 
 		// Set EXTI15 to use PORT A (PA15)
 		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
@@ -231,52 +235,55 @@ mod app {
 		dp.EXTI.emr.modify(|_r, w| w.mr15().set_bit());
 		dp.EXTI.ftsr.modify(|_r, w| w.tr15().set_bit());
 
+		// Spawn the tasks that run all the time
+		led_power_blink::spawn().unwrap();
+		button_poll::spawn().unwrap();
+
 		defmt::info!("Init complete!");
 
-		let (kb_p, kb_c) = ctx.local.queue.split();
+		let (kb_q_in, kb_q_out) = ctx.local.queue.split();
 
-		(
-			Resources {
-				serial,
-				pin_uart_cts,
-				pin_uart_rts,
-				led_power,
-				led_status,
-				button_power,
-				button_reset,
-				state_dc_power_enabled: DcPowerState::Off,
-				pin_dc_on,
-				pin_sys_reset,
-				ps2_clk0,
-				ps2_clk1,
-				ps2_dat0,
-				ps2_dat1,
-				exti: dp.EXTI,
-				register_state: RegisterState {
-					firmware_version: "Neotron BMC v0.0.0",
-				},
-				kb_p,
-				kb_c,
+		let shared_resources = Shared {
+			serial,
+			_pin_uart_cts,
+			_pin_uart_rts,
+			led_power,
+			_led_status,
+			button_power,
+			button_reset,
+			state_dc_power_enabled: DcPowerState::Off,
+			pin_dc_on,
+			pin_sys_reset,
+			ps2_clk0,
+			_ps2_clk1,
+			ps2_dat0,
+			_ps2_dat1,
+			exti: dp.EXTI,
+			_register_state: RegisterState {
+				firmware_version: concat!("Neotron BMC ", env!("CARGO_PKG_VERSION")),
 			},
-			Local {
-				press_button_power_short: debouncr::debounce_2(false),
-				press_button_power_long: debouncr::debounce_16(false),
-				kb_decoder: Ps2Decoder::new(),
-				ms_decoder: Ps2Decoder::new(),
-			},
-			init::Monotonics(mono),
-		)
+			kb_q_in,
+			kb_q_out,
+		};
+		let local_resources = Local {
+			press_button_power_short: debouncr::debounce_2(false),
+			press_button_power_long: debouncr::debounce_16(false),
+			press_button_reset_long: debouncr::debounce_16(false),
+			kb_decoder: Ps2Decoder::new(),
+		};
+		let init = init::Monotonics(mono);
+		(shared_resources, local_resources, init)
 	}
 
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do. We
 	/// do a little logging, then put the CPU to sleep waiting for an interrupt.
-	#[idle(shared = [kb_c])]
+	#[idle(shared = [kb_q_out])]
 	fn idle(ctx: idle::Context) -> ! {
 		defmt::info!("Idle is running...");
 		loop {
-			if let Some(word) = ctx.shared.kb_c.dequeue() {
+			if let Some(word) = ctx.shared.kb_q_out.dequeue() {
 				if let Some(byte) = Ps2Decoder::check_word(word) {
 					defmt::info!("< KB {:x}", byte);
 				} else {
@@ -294,7 +301,7 @@ mod app {
 	#[task(
 		binds = EXTI4_15,
 		priority = 4,
-		shared = [ps2_clk0, ps2_dat0, exti, kb_p],
+		shared = [ps2_clk0, ps2_dat0, exti, kb_q_in],
 		local = [kb_decoder]
 	)]
 	fn exti4_15_interrupt(ctx: exti4_15_interrupt::Context) {
@@ -302,7 +309,7 @@ mod app {
 		// Do we have a complete word (and if so, is the parity OK)?
 		if let Some(data) = ctx.local.kb_decoder.add_bit(data_bit) {
 			// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
-			ctx.shared.kb_p.enqueue(data).unwrap();
+			ctx.shared.kb_q_in.enqueue(data).unwrap();
 		}
 		// Clear the pending flag
 		ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
@@ -348,21 +355,27 @@ mod app {
 	/// We poll them rather than setting up an interrupt as we need to debounce them, which involves waiting a short period and checking them again. Given that we have to do that, we might as well not bother with the interrupt.
 	#[task(
 		shared = [
-			led_power, button_power, state_dc_power_enabled,
-			pin_sys_reset, pin_dc_on
+			led_power, button_power, button_reset,
+			state_dc_power_enabled, pin_sys_reset, pin_dc_on
 		],
-		local = [ press_button_power_short, press_button_power_long ]
+		local = [ press_button_power_short, press_button_power_long, press_button_reset_long ]
 	)]
 	fn button_poll(ctx: button_poll::Context) {
-		// Poll button
-		let pressed: bool = ctx.shared.button_power.is_low().unwrap();
+		// Poll buttons
+		let pwr_pressed: bool = ctx.shared.button_power.is_low().unwrap();
+		let rst_pressed: bool = ctx.shared.button_reset.is_low().unwrap();
 
 		// Update state
-		let short_edge = ctx.local.press_button_power_short.update(pressed);
-		let long_edge = ctx.local.press_button_power_long.update(pressed);
+		let pwr_short_edge = ctx.local.press_button_power_short.update(pwr_pressed);
+		let pwr_long_edge = ctx.local.press_button_power_long.update(pwr_pressed);
+		let rst_long_edge = ctx.local.press_button_reset_long.update(rst_pressed);
 
 		// Dispatch event
-		match (long_edge, short_edge, *ctx.shared.state_dc_power_enabled) {
+		match (
+			pwr_long_edge,
+			pwr_short_edge,
+			*ctx.shared.state_dc_power_enabled,
+		) {
 			(None, Some(debouncr::Edge::Rising), DcPowerState::Off) => {
 				defmt::info!("Power button pressed whilst off.");
 				// Button pressed - power on system
@@ -392,9 +405,15 @@ mod app {
 			}
 			_ => {
 				// Do nothing
-				// TODO: Put system in reset here
-				// TODO: Disable DC PSU here
 			}
+		}
+
+		if let Some(debouncr::Edge::Falling) = rst_long_edge {
+			defmt::info!("Reset!");
+			ctx.shared.pin_sys_reset.set_low().unwrap();
+			// TODO: This pulse will be very short. We should spawn a task to
+			// take it out of reset after about 100ms.
+			ctx.shared.pin_sys_reset.set_high().unwrap();
 		}
 
 		// Re-schedule the timer interrupt
@@ -405,22 +424,22 @@ mod app {
 impl Ps2Decoder {
 	fn new() -> Ps2Decoder {
 		Ps2Decoder {
-			bit_count: 0,
+			bit_mask: 1,
 			collector: 0,
 		}
 	}
 
 	fn reset(&mut self) {
-		self.bit_count = 0;
+		self.bit_mask = 0;
 		self.collector = 0;
 	}
 
 	fn add_bit(&mut self, bit: bool) -> Option<u16> {
 		if bit {
-			self.collector |= 1 << self.bit_count;
+			self.collector |= self.bit_mask;
 		}
-		self.bit_count += 1;
-		if self.bit_count == 11 {
+		self.bit_mask <<= 1;
+		if self.bit_mask == 0b100000000000 {
 			let result = self.collector;
 			self.reset();
 			Some(result)
