@@ -75,12 +75,12 @@ Note that not all STM32 pins are 5V-tolerant, and the PS/2 protocol is a 5V open
 
 ### Nucleo-F401
 
-The NBMC firmware is originally designed to run on an ST Micro STM32F0 (STM32F031K6T6) microcontroller. This MCU has:
+The NBMC also supports running on an ST Nucleo-F401RE, for development and debugging purposes. The STM32F401RET6U MCU has:
 
 * 32-bit Arm Cortex-M4 Core
 * 3.3V I/O (5V tolerant)
-* 512 KBytes Flash
-* 96 KBytes SRAM
+* 512 KiB Flash
+* 96 KiB SRAM
 * LQFP64 package (10 * 10 mm)
 
 | CPU Pin | Nucleo-64 Pin | Name | Signal      | Function                                  |
