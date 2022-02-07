@@ -1,31 +1,27 @@
 [package]
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
-name = "testsuite"
-publish = false
+name = "neotron-bmc-pico"
 edition = "2018"
-version = "0.1.0"
-
-[lib]
-harness = false
-
-[[test]]
-name = "test"
-harness = false
+version = "0.2.0"
 
 [dependencies]
-neotron-bmc = { path = ".." }
 cortex-m = "0.7.1"
-cortex-m-rt = "0.6.12"
+cortex-m-rt = "0.6.13"
 defmt = "0.2.0"
 defmt-rtt = "0.2.0"
-defmt-test = "0.2.0"
+cortex-m-rtic = "0.5"
 panic-probe = { version = "0.2.0", features = ["print-defmt"] }
+# Use this line if you have an STM32F030K6T6
+# stm32f0xx-hal = { version = "0.17", features = ["stm32f030x6", "rt"] }
+# Use this line if you have an STM32F031K6T6
+stm32f0xx-hal = { version = "0.17", features = ["stm32f031", "rt"] }
+debouncr = "0.2"
+heapless= "0.6"
 
 [features]
 # set logging levels here
 default = [
-  # in tests, enable all logs
-  "defmt-trace",
+  "defmt-default",
   # "dependency-a/defmt-trace",
 ]
 
@@ -36,3 +32,4 @@ defmt-debug = []
 defmt-info = []
 defmt-warn = []
 defmt-error = []
+
