@@ -20,7 +20,7 @@ use core::{
 	fmt, ops,
 };
 use rtic::Monotonic;
-use stm32f0xx_hal::pac;
+use stm32f4xx_hal::pac;
 
 /// Implementor of the `rtic::Monotonic` traits and used to consume the timer
 /// to not allow for erroneous configuration.

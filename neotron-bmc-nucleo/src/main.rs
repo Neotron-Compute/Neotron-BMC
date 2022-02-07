@@ -15,7 +15,7 @@ use heapless::{
 	spsc::{Consumer, Producer, Queue},
 };
 use rtic::app;
-use stm32f0xx_hal::{
+use stm32f4xx_hal::{
 	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA9},
 	gpio::gpiob::{PB0, PB1, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
