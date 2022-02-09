@@ -415,12 +415,8 @@ mod app {
 	///
 	/// We poll them rather than setting up an interrupt as we need to debounce them, which involves waiting a short period and checking them again. Given that we have to do that, we might as well not bother with the interrupt.
 	#[task(
-		shared = [
-			led_power, button_power, button_reset, state_dc_power_enabled,
-			pin_sys_reset,  pin_dc_on	
-		],
-		local = [ press_button_power_short,  press_button_power_long, 
-		press_button_reset_long],		
+		shared = [led_power, button_power, button_reset, state_dc_power_enabled, pin_sys_reset, pin_dc_on],
+		local = [press_button_power_short, press_button_power_long, press_button_reset_long]
 	)]
 	fn button_poll(ctx: button_poll::Context) {
 		// Poll button
