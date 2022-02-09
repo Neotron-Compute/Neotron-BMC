@@ -27,7 +27,7 @@ use stm32f4xx_hal::{
 	// PB13: MON_5V
 	gpio::gpioa::{PA4, PA5, PA6, PA7, PA9, PA10, PA11, PA12, PA13, PA14},
 	gpio::gpiob::{PB0, PB12, PB1, PB2, PB6, PB7, PB13, PB14, PB15},
-	gpio::{Alternate, Floating, Input, Output, PullUp, PushPull, AF1},
+	gpio::{Alternate, Edge, Floating, Input, Output, PullUp, PushPull},
 	pac,
 	prelude::*,
 	serial,
@@ -78,7 +78,8 @@ pub struct RegisterState {
 	firmware_version: &'static str,
 }
 
-#[app(device = crate::pac, peripherals = true, dispatchers = [USB])]
+//USB is not a name of an interrupt
+#[app(device = crate::pac, peripherals = true, dispatchers=[USART2])]
 mod app {
 
 	use super::*;
@@ -94,15 +95,15 @@ mod app {
 		led_status: PC2<Output<PushPull>>,
 		/// The FTDI UART header (J105) PA9: CN10, pin 21 and PA10: CN10, pin 33 
 		#[lock_free]
-		serial: serial::Serial<pac::USART1, PA9<Alternate<AF1>>, PA10<Alternate<AF1>>>,
+		serial: serial::Serial<pac::USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull,7>>)>,
 		/// The Clear-To-Send line on the FTDI UART header 
 		/// (which the serial object can't handle) CN10, pin 14 
 		#[lock_free]
-		pin_uart_cts: PA11<Alternate<AF1>>,
+		pin_uart_cts: PA11<Alternate<PushPull,7>>,
 		/// The Ready-To-Receive line on the FTDI UART header 
 		/// (which the serial object can't handle) CN10, pin 12 
 		#[lock_free]
-		pin_uart_rts: PA12<Alternate<AF1>>,
+		pin_uart_rts: PA12<Alternate<PushPull,7>>,
 		/// The power button, CN7, pin 23 
 		#[lock_free]
 		button_power: PC13<Input<PullUp>>,
@@ -175,29 +176,31 @@ mod app {
 	/// * Task `button_poll` - checks the power and reset buttons
 	#[init(local = [queue: Queue<u16, 8> = Queue::new()])]
 	fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
-
+		//static mut Q: Queue<u16, U8> = Queue(i::Queue::new());
 		defmt::info!("Neotron BMC Nucleo version {:?} booting", VERSION);
 
-		let dp: pac::Peripherals = ctx.device;
+		let mut dp: pac::Peripherals = ctx.device;
 
 		let mut flash = dp.FLASH;
-		let mut rcc = dp
+		// Changed from RCC
+		let mut clocks = dp
 			.RCC
-			.configure()
+			.constrain()
+			.cfgr
 			.hclk(48.mhz())
-			.pclk(48.mhz())
+			//pclk is replaced by pclk1
+			.pclk1(48.mhz())
 			.sysclk(48.mhz())
-			.freeze(&mut flash);
+			.freeze();
 
 		defmt::info!("Configuring TIM2...");
-		let mono = MyMono::new(dp.TIM2, &rcc.clocks);
+		let mono = MyMono::new(dp.TIM2, &clocks);
 		
-		let mut Q: Queue<u16, 8> = Queue::new();
-
 		defmt::info!("Creating pins...");
-		let gpioa = dp.GPIOA.split(&mut rcc);
-		let gpiob = dp.GPIOB.split(&mut rcc);
-		let gpiof = dp.GPIOF.split(&mut rcc);
+		let gpioa = dp.GPIOA.split();
+		let gpiob = dp.GPIOB.split();
+		let gpioc = dp.GPIOC.split();
+		//let gpiof = dp.GPIOF.split();
 		let (
 			uart_tx,
 			uart_rx,
@@ -209,49 +212,73 @@ mod app {
 			button_reset,
 			mut pin_dc_on,
 			mut pin_sys_reset,
-			ps2_clk0,
+			mut ps2_clk0,
 			ps2_clk1,
 			ps2_dat0,
 			ps2_dat1,
 		) = disable_interrupts(|cs| {
 			(
-				gpioa.pa9.into_alternate_af1(cs),
-				gpioa.pa10.into_alternate_af1(cs),
-				gpioa.pa11.into_alternate_af1(cs),
-				gpioa.pa12.into_alternate_af1(cs),
-				gpiob.pb0.into_push_pull_output(cs),
-				gpiob.pb1.into_push_pull_output(cs),
-				gpiof.pf0.into_pull_up_input(cs),
-				gpiof.pf1.into_pull_up_input(cs),
-				gpioa.pa3.into_push_pull_output(cs),
-				gpioa.pa2.into_push_pull_output(cs),
-				gpioa.pa15.into_floating_input(cs),
-				gpiob.pb3.into_floating_input(cs),
-				gpiob.pb4.into_floating_input(cs),
-				gpiob.pb5.into_floating_input(cs),
+				gpioa.pa9.into_alternate(),
+				gpioa.pa10.into_alternate(),
+				gpioa.pa11.into_alternate(),
+				gpioa.pa12.into_alternate(),
+				//power led
+				gpioc.pc1.into_push_pull_output(),
+				// status led
+				gpioc.pc2.into_push_pull_output(),
+				// power button
+				gpioc.pc13.into_pull_up_input(),
+				// reset button
+				gpiob.pb12.into_pull_up_input(),
+				//dc on
+				gpioc.pc0.into_push_pull_output(),
+				// system reset
+				gpiob.pb15.into_push_pull_output(),
+				//PS2_CLK0
+				gpioc.pc5.into_floating_input(),
+				//PS2_CLK1	
+				gpiob.pb0.into_floating_input(),
+				//PS2_DAT0
+				gpiob.pb1.into_floating_input(),
+				//PS2_DAT1
+				gpiob.pb2.into_floating_input(),
 			)
 		});
 
-		pin_sys_reset.set_low().unwrap();
-		pin_dc_on.set_low().unwrap();
+		// not returning result anymore
+		pin_sys_reset.set_low();
+		pin_dc_on.set_low();
 
 		defmt::info!("Creating UART...");
 
-		let mut serial =
-			serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
+		// let mut serial =
+		// 	serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
 
+		let mut serial = serial::Serial::new(
+            dp.USART1,
+            (uart_tx, uart_rx),
+            serial::config::Config::default().baudrate(115_200.bps()),
+            &clocks,
+        )
+        .unwrap();
 		serial.listen(serial::Event::Rxne);
 
-		led_power.set_low().unwrap();
-		led_status.set_low().unwrap();
+		// no result
+		led_power.set_low();
+		led_status.set_low();
 
 		// Set EXTI15 to use PORT A (PA15)
-		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
+		// 	PA15	PS2_CLK0	Keyboard Clock Input is now PC5
+		let mut sys_cfg = dp.SYSCFG.constrain();
+		ps2_clk0.make_interrupt_source(&mut sys_cfg);
+		ps2_clk0.enable_interrupt(&mut dp.EXTI);
+        ps2_clk0.trigger_on_edge(&mut dp.EXTI, Edge::Falling);
+		//dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
 
 		// Enable EXTI15 interrupt as external falling edge
-		dp.EXTI.imr.modify(|_r, w| w.mr15().set_bit());
-		dp.EXTI.emr.modify(|_r, w| w.mr15().set_bit());
-		dp.EXTI.ftsr.modify(|_r, w| w.tr15().set_bit());
+		// dp.EXTI.imr.modify(|_r, w| w.mr15().set_bit());
+		// dp.EXTI.emr.modify(|_r, w| w.mr15().set_bit());
+		// dp.EXTI.ftsr.modify(|_r, w| w.tr15().set_bit());
 
 		// Spawn the tasks that run all the time
 		led_power_blink::spawn().unwrap();
@@ -259,7 +286,7 @@ mod app {
 
 		defmt::info!("Init complete!");
 
-		let (kb_q_in, kb_q_out) = Q.split();
+		let (kb_q_in, kb_q_out) = ctx.local.queue.split();
 
 		let shared_resources = Shared {
 			serial,
@@ -282,9 +309,8 @@ mod app {
 			},
 			kb_q_in,
 			kb_q_out,
-			kb_decoder: Ps2Decoder::new(),
 			// SEEMS GONE:
-			//ms_decoder: Ps2Decoder::new(),
+			ms_decoder: Ps2Decoder::new(),
 		};
 		 
 		let local_resources = Local {
@@ -306,7 +332,7 @@ mod app {
 	fn idle(ctx: idle::Context) -> ! {
 		defmt::info!("Idle is running...");
 		loop {
-			if let Some(word) = ctx.resources.kb_q_out.dequeue() {
+			if let Some(word) = ctx.shared.kb_q_out.dequeue() {
 				if let Some(byte) = Ps2Decoder::check_word(word) {
 					defmt::info!("< KB {:x}", byte);
 				} else {
@@ -322,20 +348,23 @@ mod app {
 	///
 	/// It fires when there is a falling edge on the PS/2 Keyboard clock pin.
 	#[task(
-		binds = EXTI4_15,
+		//apparently EXTI4_15 is
+		binds = EXTI15_10,
 		priority = 4,
 		shared=[ps2_clk0, ps2_dat0, exti, kb_q_in],
 		local=[kb_decoder]
 	)]
-	fn exti4_15_interrupt(ctx: exti4_15_interrupt::Context) {
-		let data_bit = ctx.shared.ps2_dat0.is_high().unwrap();
+	fn exti15_10_interrupt(ctx: exti15_10_interrupt::Context) {
+		// no result
+		let data_bit = ctx.shared.ps2_dat0.is_high();
 		// Do we have a complete word (and if so, is the parity OK)?
-		if let Some(data) = ctx.shared.kb_decoder.add_bit(data_bit) {
+		if let Some(data) = ctx.local.kb_decoder.add_bit(data_bit) {
 			// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
 			ctx.shared.kb_q_in.enqueue(data).unwrap();
 		}
 		// Clear the pending flag
-		ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
+		//ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
+		ctx.shared.ps2_dat0.clear_interrupt_pending_bit();
 	}
 
 	/// This is the USART1 task.
@@ -366,12 +395,13 @@ mod app {
 	fn led_power_blink(ctx: led_power_blink::Context) {
 		
 		if *ctx.shared.state_dc_power_enabled == DcPowerState::Off {
-			defmt::trace!("blink time {}", ctx.scheduled.counts());
-			if *ctx.local.state {
-				ctx.shared.led_power.set_low().unwrap();
+			//TODO: Shall that be local?
+			//defmt::trace!("blink time {}", ctx.scheduled.counts());
+			if *ctx.local.led_state {
+				ctx.shared.led_power.set_low();
 				*ctx.local.led_state = false;
 			} else {
-				ctx.shared.led_power.set_high().unwrap();
+				ctx.shared.led_power.set_high();
 				*ctx.local.led_state = true;
 			}
 			
@@ -392,8 +422,8 @@ mod app {
 	)]
 	fn button_poll(ctx: button_poll::Context) {
 		// Poll button
-		let pwr_pressed: bool = ctx.shared.button_power.is_low().unwrap();
-		let rst_pressed: bool = ctx.shared.button_reset.is_low().unwrap();
+		let pwr_pressed: bool = ctx.shared.button_power.is_low();
+		let rst_pressed: bool = ctx.shared.button_reset.is_low();
 		// Update state
 		let pwr_short_edge = ctx.local.press_button_power_short.update(pwr_pressed);
 		let pwr_long_edge = ctx.local.press_button_power_long.update(pwr_pressed);
@@ -409,12 +439,12 @@ mod app {
 				defmt::info!("Power button pressed whilst off.");
 				// Button pressed - power on system
 				*ctx.shared.state_dc_power_enabled = DcPowerState::Starting;
-				ctx.shared.led_power.set_high().unwrap();
+				ctx.shared.led_power.set_high();
 				defmt::info!("Power on!");
-				ctx.shared.pin_dc_on.set_high().unwrap();
+				ctx.shared.pin_dc_on.set_high();
 				// TODO: Start monitoring 3.3V and 5.0V rails here
 				// TODO: Take system out of reset when 3.3V and 5.0V are good
-				ctx.shared.pin_sys_reset.set_high().unwrap();
+				ctx.shared.pin_sys_reset.set_high();
 			}
 			(None, Some(debouncr::Edge::Falling), DcPowerState::Starting) => {
 				defmt::info!("Power button released.");
@@ -424,13 +454,13 @@ mod app {
 			(Some(debouncr::Edge::Rising), None, DcPowerState::On) => {
 				defmt::info!("Power button held whilst on.");
 				*ctx.shared.state_dc_power_enabled = DcPowerState::Off;
-				ctx.shared.led_power.set_low().unwrap();
+				ctx.shared.led_power.set_low();
 				defmt::info!("Power off!");
-				ctx.shared.pin_sys_reset.set_low().unwrap();
+				ctx.shared.pin_sys_reset.set_low();
 				// TODO: Wait for 100ms for chips to stop?
-				ctx.shared.pin_dc_on.set_low().unwrap();
+				ctx.shared.pin_dc_on.set_low();
 				// Start LED blinking again
-				led_power_blink::spawn().unwrap();
+				led_power_blink::spawn();
 			}
 			_ => {
 				// Do nothing
@@ -441,10 +471,10 @@ mod app {
 
 		if let Some(debouncr::Edge::Falling) = rst_long_edge {
 			defmt::info!("Reset!");
-			ctx.shared.pin_sys_reset.set_low().unwrap();
+			ctx.shared.pin_sys_reset.set_low();
 			// TODO: This pulse will be very short. We should spawn a task to
 			// take it out of reset after about 100ms.
-			ctx.shared.pin_sys_reset.set_high().unwrap();
+			ctx.shared.pin_sys_reset.set_high();
 		}
 		// Re-schedule the timer interrupt
 		button_poll::spawn_after(DEBOUNCE_POLL_INTERVAL_MS.millis()).unwrap();
