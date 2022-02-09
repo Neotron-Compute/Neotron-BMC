@@ -254,6 +254,7 @@ mod app {
 		// let mut serial =
 		// 	serial::Serial::usart1(dp.USART1, (uart_tx, uart_rx), 115_200.bps(), &mut rcc);
 		// source : https://github.com/jamesmunns/pretty-hal-machine/blob/7f2f50c8c841c6d936a7147a092ec67bbb2602fa/firmware/blackpill-phm/src/main.rs#L103
+
 		let mut serial = serial::Serial::new(
             dp.USART1,
             (uart_tx, uart_rx),
@@ -461,7 +462,7 @@ mod app {
 				// TODO: Wait for 100ms for chips to stop?
 				ctx.shared.pin_dc_on.set_low();
 				// Start LED blinking again
-				led_power_blink::spawn().unwrap();
+				led_power_blink::spawn();
 			}
 			_ => {
 				// Do nothing
