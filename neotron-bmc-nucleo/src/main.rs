@@ -188,10 +188,10 @@ mod app {
 			.RCC
 			.constrain()
 			.cfgr
-			.hclk(48.mhz())
+			.sysclk(84.mhz())
+			.hclk(84.mhz())
 			//pclk is replaced by pclk1
-			.pclk1(48.mhz())
-			.sysclk(48.mhz())
+			.pclk1(42.mhz())
 			.freeze();
 
 		defmt::info!("Configuring TIM2...");
