@@ -350,13 +350,13 @@ mod app {
 	///
 	/// It fires when there is a falling edge on the PS/2 Keyboard clock pin.
 	#[task(
-		//apparently EXTI4_15 is
-		binds = EXTI15_10,
+		//apparently it should be EXTI1 is
+		binds = EXTI1,
 		priority = 4,
 		shared=[ps2_clk0, ps2_dat0, exti, kb_q_in],
 		local=[kb_decoder]
 	)]
-	fn exti15_10_interrupt(ctx: exti15_10_interrupt::Context) {
+	fn exti1_interrupt(ctx: exti1_interrupt::Context) {
 		// no result
 		let data_bit = ctx.shared.ps2_dat0.is_high();
 		// Do we have a complete word (and if so, is the parity OK)?
