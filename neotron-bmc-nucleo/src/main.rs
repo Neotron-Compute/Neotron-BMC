@@ -12,7 +12,6 @@ use cortex_m::interrupt::free as disable_interrupts;
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f4xx_hal::{
-	gpio::gpioc::{PC13, PC0, PC1, PC2, PC3, PC5},
 	// Those pins are not used atm:
 	// PC3:  IRQ_nHOST
 	// PA4:  SPI1_NSS
@@ -25,8 +24,9 @@ use stm32f4xx_hal::{
 	// PB7:  I2C1_SDA
 	// PB13: MON_3V3
 	// PB13: MON_5V
-	gpio::gpioa::{PA4, PA5, PA6, PA7, PA9, PA10, PA11, PA12, PA13, PA14},
-	gpio::gpiob::{PB0, PB12, PB1, PB2, PB6, PB7, PB13, PB14, PB15},
+	gpio::gpioa::{PA10, PA11, PA12, PA13, PA14, PA4, PA5, PA6, PA7, PA9},
+	gpio::gpiob::{PB0, PB1, PB12, PB13, PB14, PB15, PB2, PB6, PB7},
+	gpio::gpioc::{PC0, PC1, PC13, PC2, PC3, PC5},
 	gpio::{Alternate, Edge, Floating, Input, Output, PullUp, PushPull},
 	pac,
 	prelude::*,
@@ -86,28 +86,31 @@ mod app {
 	use fugit::ExtU32;
 
 	#[shared]
-    struct Shared {
-        /// The power LED CN6, pin 5 
+	struct Shared {
+		/// The power LED CN6, pin 5
 		#[lock_free]
 		led_power: PC1<Output<PushPull>>,
-		/// The status LED CN7, pin 35 
+		/// The status LED CN7, pin 35
 		#[lock_free]
 		led_status: PC2<Output<PushPull>>,
-		/// The FTDI UART header (J105) PA9: CN10, pin 21 and PA10: CN10, pin 33 
+		/// The FTDI UART header (J105) PA9: CN10, pin 21 and PA10: CN10, pin 33
 		#[lock_free]
-		serial: serial::Serial<pac::USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull,7>>)>,
-		/// The Clear-To-Send line on the FTDI UART header 
-		/// (which the serial object can't handle) CN10, pin 14 
+		serial: serial::Serial<
+			pac::USART1,
+			(PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull, 7>>),
+		>,
+		/// The Clear-To-Send line on the FTDI UART header
+		/// (which the serial object can't handle) CN10, pin 14
 		#[lock_free]
-		pin_uart_cts: PA11<Alternate<PushPull,7>>,
-		/// The Ready-To-Receive line on the FTDI UART header 
-		/// (which the serial object can't handle) CN10, pin 12 
+		pin_uart_cts: PA11<Alternate<PushPull, 7>>,
+		/// The Ready-To-Receive line on the FTDI UART header
+		/// (which the serial object can't handle) CN10, pin 12
 		#[lock_free]
-		pin_uart_rts: PA12<Alternate<PushPull,7>>,
-		/// The power button, CN7, pin 23 
+		pin_uart_rts: PA12<Alternate<PushPull, 7>>,
+		/// The power button, CN7, pin 23
 		#[lock_free]
 		button_power: PC13<Input<PullUp>>,
-		/// The reset button, CN10, pin 16 
+		/// The reset button, CN10, pin 16
 		#[lock_free]
 		button_reset: PB12<Input<PullUp>>,
 		/// Tracks DC power state
@@ -117,19 +120,19 @@ mod app {
 		#[lock_free]
 		pin_dc_on: PC0<Output<PushPull>>,
 		/// Controls the Reset signal across the main board, putting all the
-		/// chips (except this BMC!) in reset when pulled low. CN10, pin 26 
+		/// chips (except this BMC!) in reset when pulled low. CN10, pin 26
 		#[lock_free]
 		pin_sys_reset: PB15<Output<PushPull>>,
-		/// Clock pin for PS/2 Keyboard port, CN10, pin 6 	
+		/// Clock pin for PS/2 Keyboard port, CN10, pin 6
 		#[lock_free]
 		ps2_clk0: PC5<Input<Floating>>,
-		/// Clock pin for PS/2 Mouse port, CN8, pin 4 
+		/// Clock pin for PS/2 Mouse port, CN8, pin 4
 		#[lock_free]
 		ps2_clk1: PB0<Input<Floating>>,
-		/// Data pin for PS/2 Keyboard port, CN10, pin 24 
+		/// Data pin for PS/2 Keyboard port, CN10, pin 24
 		#[lock_free]
 		ps2_dat0: PB1<Input<Floating>>,
-		/// Data pin for PS/2 Mouse port, CN10, port 22 
+		/// Data pin for PS/2 Mouse port, CN10, port 22
 		#[lock_free]
 		ps2_dat1: PB2<Input<Floating>>,
 		/// The external interrupt peripheral
@@ -138,7 +141,7 @@ mod app {
 		/// Our register state
 		#[lock_free]
 		register_state: RegisterState,
-		
+
 		/// Mouse PS/2 decoder
 		ms_decoder: Ps2Decoder,
 		/// Keyboard bytes sink
@@ -147,26 +150,24 @@ mod app {
 		/// Keyboard bytes source
 		#[lock_free]
 		kb_q_in: Producer<'static, u16, 8>,
-    }
+	}
 
 	#[local]
-    struct Local {
-		/// Tracks power button state for short presses. 
+	struct Local {
+		/// Tracks power button state for short presses.
 		/// 75ms x 2 = 150ms is a short press : DOES THE COMMENT MATCH?
-        press_button_power_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
-		/// Tracks power button state for long presses. 
+		press_button_power_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
+		/// Tracks power button state for long presses.
 		/// 75ms x 16 = 1200ms is a long press
 		press_button_power_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
 		/// Tracks reset button state for long presses. 75ms x 16 = 1200ms is a long press
 		press_button_reset_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
 		/// Keyboard PS/2 decoder
 		kb_decoder: Ps2Decoder,
-    }
+	}
 
 	#[monotonic(binds = TIM2, default = true)]
 	type MyMono = MonoTimer<pac::TIM2, 1_000_000>;
-
-	
 
 	/// The entry point to our application.
 	///
@@ -196,7 +197,7 @@ mod app {
 
 		defmt::info!("Configuring TIM2...");
 		let mono = MyMono::new(dp.TIM2, &clocks);
-		
+
 		defmt::info!("Creating pins...");
 		let gpioa = dp.GPIOA.split();
 		let gpiob = dp.GPIOB.split();
@@ -236,7 +237,7 @@ mod app {
 				gpiob.pb15.into_push_pull_output(),
 				//PS2_CLK0
 				gpioc.pc5.into_floating_input(),
-				//PS2_CLK1	
+				//PS2_CLK1
 				gpiob.pb0.into_floating_input(),
 				//PS2_DAT0
 				gpiob.pb1.into_floating_input(),
@@ -256,12 +257,12 @@ mod app {
 		// source : https://github.com/jamesmunns/pretty-hal-machine/blob/7f2f50c8c841c6d936a7147a092ec67bbb2602fa/firmware/blackpill-phm/src/main.rs#L103
 
 		let mut serial = serial::Serial::new(
-            dp.USART1,
-            (uart_tx, uart_rx),
-            serial::config::Config::default().baudrate(115_200.bps()),
-            &clocks,
-        )
-        .unwrap();
+			dp.USART1,
+			(uart_tx, uart_rx),
+			serial::config::Config::default().baudrate(115_200.bps()),
+			&clocks,
+		)
+		.unwrap();
 		serial.listen(serial::Event::Rxne);
 
 		// no result
@@ -274,7 +275,7 @@ mod app {
 		let mut sys_cfg = dp.SYSCFG.constrain();
 		ps2_clk0.make_interrupt_source(&mut sys_cfg);
 		ps2_clk0.enable_interrupt(&mut dp.EXTI);
-        ps2_clk0.trigger_on_edge(&mut dp.EXTI, Edge::Falling);
+		ps2_clk0.trigger_on_edge(&mut dp.EXTI, Edge::Falling);
 		//dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
 
 		// Enable EXTI15 interrupt as external falling edge
@@ -314,7 +315,7 @@ mod app {
 			// SEEMS GONE:
 			ms_decoder: Ps2Decoder::new(),
 		};
-		 
+
 		let local_resources = Local {
 			press_button_power_short: debouncr::debounce_2(false),
 			press_button_power_long: debouncr::debounce_16(false),
@@ -322,7 +323,7 @@ mod app {
 			kb_decoder: Ps2Decoder::new(),
 		};
 		let init = init::Monotonics(mono);
-		
+
 		(shared_resources, local_resources, init)
 	}
 
@@ -395,7 +396,6 @@ mod app {
 		local = [led_state:bool = false]
 	)]
 	fn led_power_blink(ctx: led_power_blink::Context) {
-		
 		if *ctx.shared.state_dc_power_enabled == DcPowerState::Off {
 			//TODO: Shall that be local?
 			//defmt::trace!("blink time {}", ctx.scheduled.counts());
@@ -406,7 +406,7 @@ mod app {
 				ctx.shared.led_power.set_high();
 				*ctx.local.led_state = true;
 			}
-			
+
 			led_power_blink::spawn_after(LED_PERIOD_MS.millis()).unwrap();
 		}
 	}
@@ -429,9 +429,9 @@ mod app {
 
 		// Dispatch event
 		match (
-			pwr_long_edge, 
-			pwr_short_edge, 
-			*ctx.shared.state_dc_power_enabled
+			pwr_long_edge,
+			pwr_short_edge,
+			*ctx.shared.state_dc_power_enabled,
 		) {
 			(None, Some(debouncr::Edge::Rising), DcPowerState::Off) => {
 				defmt::info!("Power button pressed whilst off.");
@@ -476,7 +476,6 @@ mod app {
 		}
 		// Re-schedule the timer interrupt
 		button_poll::spawn_after(DEBOUNCE_POLL_INTERVAL_MS.millis()).unwrap();
-
 	}
 }
 
