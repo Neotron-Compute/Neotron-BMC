@@ -8,9 +8,9 @@ jobs:
       matrix:
         include:
           - target: thumbv6m-none-eabi
-            dir: neotron-bmc-pico/
+            dir: Neotron-BMC/neotron-bmc-pico/
           - target: thumbv7m-none-eabihf
-            dir: neotron-bmc-nucleo/
+            dir: Neotron-BMC/neotron-bmc-nucleo/
     steps:
     - name: Checkout source code
       uses: actions/checkout@v1
