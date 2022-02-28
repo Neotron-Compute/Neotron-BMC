@@ -14,7 +14,7 @@ jobs:
       - name: Add targets
         run: |
           rustup target add thumbv6m-none-eabi
-          rustup target add thumbv7m-none-eabihf
+          rustup target add thumbv7em-none-eabihf
 
       - name: Install flip-link
         run: cd / && cargo install flip-link
@@ -23,7 +23,7 @@ jobs:
         run: cd neotron-bmc-pico && cargo build --release --verbose --target=thumbv6m-none-eabi
 
       - name: Build neotron-bmc-nucleo
-        run: cd neotron-bmc-nucleo && cargo build --release --verbose --target=thumbv7m-none-eabihf
+        run: cd neotron-bmc-nucleo && cargo build --release --verbose --target=thumbv7em-none-eabihf
 
       - name: Get Branch Name
         if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
@@ -49,6 +49,6 @@ jobs:
         with:
           files: |
             neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc
-            neotron-bmc-nucleo/target/thumbv7m-none-eabihf/release/neotron-bmc
+            neotron-bmc-nucleo/target/thumbv7em-none-eabihf/release/neotron-bmc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
