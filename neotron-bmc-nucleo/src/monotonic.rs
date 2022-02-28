@@ -6,7 +6,6 @@ use stm32f4xx_hal::rcc::Clocks;
 /// This uses TIM2 internally.
 pub struct MonoTimer<T, const FREQ: u32>(T);
 
-
 impl<const FREQ: u32> MonoTimer<pac::TIM2, FREQ> {
 	/// Initialize the timer instance.
 	pub fn new(timer: pac::TIM2, clocks: &Clocks) -> Self {
@@ -25,7 +24,7 @@ impl<const FREQ: u32> MonoTimer<pac::TIM2, FREQ> {
 			rcc.apb1rstr.modify(|_, w| w.tim2rst().clear_bit());
 		}
 
-		let prescaler = (clocks.pclk1().0 /FREQ) - 1;
+		let prescaler = (clocks.pclk1().0 / FREQ) - 1;
 		// Set up prescaler
 		timer.psc.write(|w| w.psc().bits(prescaler as u16));
 
@@ -42,11 +41,11 @@ impl<const FREQ: u32> MonoTimer<pac::TIM2, FREQ> {
 impl<const FREQ: u32> Monotonic for MonoTimer<pac::TIM2, FREQ> {
 	type Instant = fugit::TimerInstantU32<FREQ>;
 	type Duration = fugit::TimerDurationU32<FREQ>;
-	
+
 	unsafe fn reset(&mut self) {
 		self.0.dier.modify(|_, w| w.cc1ie().set_bit());
 	}
-	
+
 	#[inline(always)]
 	fn now(&mut self) -> Self::Instant {
 		Self::Instant::from_ticks(self.0.cnt.read().cnt().bits())
