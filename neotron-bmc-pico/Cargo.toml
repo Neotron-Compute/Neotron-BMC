@@ -1,6 +1,6 @@
 [package]
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
-name = "neotron-bmc-pico"
+name = "neotron-bmc"
 edition = "2018"
 version = "0.2.0"
 
@@ -9,14 +9,15 @@ cortex-m = "0.7.1"
 cortex-m-rt = "0.6.13"
 defmt = "0.2.0"
 defmt-rtt = "0.2.0"
-cortex-m-rtic = "0.5"
+cortex-m-rtic = "1.0"
 panic-probe = { version = "0.2.0", features = ["print-defmt"] }
 # Use this line if you have an STM32F030K6T6
 # stm32f0xx-hal = { version = "0.17", features = ["stm32f030x6", "rt"] }
 # Use this line if you have an STM32F031K6T6
 stm32f0xx-hal = { version = "0.17", features = ["stm32f031", "rt"] }
 debouncr = "0.2"
-heapless= "0.6"
+heapless= "0.7"
+fugit = "0.3"
 
 [features]
 # set logging levels here
@@ -33,3 +34,48 @@ defmt-info = []
 defmt-warn = []
 defmt-error = []
 
+# cargo build/run
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = 3 # <-
+overflow-checks = true # <-
+
+# cargo test
+[profile.test]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = 3 # <-
+overflow-checks = true # <-
+
+# cargo build/run --release
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = 3 # <-
+overflow-checks = false # <-
+
+# cargo test --release
+[profile.bench]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = 3 # <-
+overflow-checks = false # <-
+
+# uncomment this to switch from the crates.io version of defmt to its git version
+# check app-template's README for instructions
+# [patch.crates-io]
+# defmt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
+# defmt-rtt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
+# defmt-test = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
+# panic-probe = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version reported by `probe-run --version`" }
