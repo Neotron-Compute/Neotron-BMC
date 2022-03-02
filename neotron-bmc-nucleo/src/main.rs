@@ -78,7 +78,6 @@ pub struct RegisterState {
 	firmware_version: &'static str,
 }
 
-//USB is not a name of an interrupt
 #[app(device = crate::pac, peripherals = true, dispatchers=[USART2])]
 mod app {
 
@@ -223,7 +222,7 @@ mod app {
 				gpioa.pa10.into_alternate(),
 				gpioa.pa11.into_alternate(),
 				gpioa.pa12.into_alternate(),
-				//power led
+				// power led
 				gpioc.pc1.into_push_pull_output(),
 				// status led
 				gpioc.pc2.into_push_pull_output(),
@@ -231,17 +230,17 @@ mod app {
 				gpioc.pc13.into_pull_up_input(),
 				// reset button
 				gpiob.pb12.into_pull_up_input(),
-				//dc on
+				// dc on
 				gpioc.pc0.into_push_pull_output(),
 				// system reset
 				gpiob.pb15.into_push_pull_output(),
-				//PS2_CLK0
+				// PS2_CLK0
 				gpioc.pc5.into_floating_input(),
-				//PS2_CLK1
+				// PS2_CLK1
 				gpiob.pb0.into_floating_input(),
-				//PS2_DAT0
+				// PS2_DAT0
 				gpiob.pb1.into_floating_input(),
-				//PS2_DAT1
+				// PS2_DAT1
 				gpiob.pb2.into_floating_input(),
 			)
 		});
@@ -312,7 +311,6 @@ mod app {
 			},
 			kb_q_in,
 			kb_q_out,
-			// SEEMS GONE:
 			ms_decoder: Ps2Decoder::new(),
 		};
 

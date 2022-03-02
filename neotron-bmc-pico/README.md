@@ -21,5 +21,5 @@ TODO: copy here from main Readme?
 Then to build and flash, connect a probe supported by probe-rs (such as a SEGGER J-Link, or an ST-Link) and run:
 
 ```
-$ cargo run --bin neotron-bmc --release
+$ cargo run --release
 ```

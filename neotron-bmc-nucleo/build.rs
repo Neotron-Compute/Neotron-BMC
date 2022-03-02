@@ -1,6 +1,6 @@
-/// This is the build-script for the Neotron BMC.
-///
-/// It just copies the memory.x file somewhere Cargo can find it, then generates a version header.
+//! This is the build-script for the Neotron BMC.
+//!
+//! It just copies the memory.x file somewhere Cargo can find it, then generates a version header.
 use std::env;
 use std::fs::File;
 use std::io::Write;
