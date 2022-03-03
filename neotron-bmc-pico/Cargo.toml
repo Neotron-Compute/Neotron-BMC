@@ -4,9 +4,6 @@ name = "neotron-bmc"
 edition = "2018"
 version = "0.2.0"
 
-[workspace]
-members = ["testsuite"]
-
 [dependencies]
 cortex-m = "0.7.1"
 cortex-m-rt = "0.6.13"

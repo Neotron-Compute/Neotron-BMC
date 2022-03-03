@@ -1,30 +1,38 @@
-on:
-  push:
-    tags:
-    - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
-
+on: [push, pull_request]
 name: Upload Release
 
 jobs:
   build:
-    name: Upload Release
+    name: Build and release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v1
         with:
           submodules: true
-      - name: Add Target
-        run: rustup target add thumbv6m-none-eabi
+
+      - name: Add targets
+        run: |
+          rustup target add thumbv6m-none-eabi
+          rustup target add thumbv7em-none-eabihf
+
       - name: Install flip-link
         run: cd / && cargo install flip-link
-      - name: Build
-        run: cargo build --release --target=thumbv6m-none-eabi
+
+      - name: Build neotron-bmc-pico
+        run: cd neotron-bmc-pico && cargo build --release --verbose --target=thumbv6m-none-eabi
+
+      - name: Build neotron-bmc-nucleo
+        run: cd neotron-bmc-nucleo && cargo build --release --verbose --target=thumbv7em-none-eabihf
+
       - name: Get Branch Name
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
         id: branch_name
         run: |
           echo ::set-output name=SOURCE_TAG::${GITHUB_REF#refs/tags/}
+
       - name: Create Release
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
         id: create_release
         uses: actions/create-release@v1
         env:
@@ -34,10 +42,13 @@ jobs:
           release_name: Release ${{ steps.branch_name.outputs.SOURCE_TAG }}
           draft: false
           prerelease: false
+
       - name: Upload files to Release
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            target/thumbv6m-none-eabi/release/neotron-bmc
+            neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc
+            neotron-bmc-nucleo/target/thumbv7em-none-eabihf/release/neotron-bmc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
