@@ -5,26 +5,24 @@ edition = "2018"
 version = "0.2.0"
 
 [dependencies]
-cortex-m = "0.7.1"
-cortex-m-rt = "0.6.13"
-defmt = "0.2.0"
-defmt-rtt = "0.2.0"
+defmt = "0.3"
+cortex-m = { version = "0.7.5", features = ["inline-asm"] }
+defmt-rtt = "0.3"
 cortex-m-rtic = "1.0"
-panic-probe = { version = "0.2.0", features = ["print-defmt"] }
-# Use this line if you have an STM32F030K6T6
-# stm32f0xx-hal = { version = "0.17", features = ["stm32f030x6", "rt"] }
-# Use this line if you have an STM32F031K6T6
-stm32f0xx-hal = { version = "0.17", features = ["stm32f031", "rt"] }
+panic-probe = { version = "0.3.0", features = ["print-defmt"] }
+stm32f0xx-hal = { version = "0.18", features = ["rt"] }
 debouncr = "0.2"
 heapless= "0.7"
-fugit = "0.3"
+systick-monotonic = "1.0.0"
 
 [features]
 # set logging levels here
 default = [
   "defmt-default",
-  # "dependency-a/defmt-trace",
 ]
+# You need to enable one of these two
+stm32f030x6 = [ "stm32f0xx-hal/stm32f030x6"]
+stm32f031 = [ "stm32f0xx-hal/stm32f031"]
 
 # do NOT modify these features
 defmt-default = []
