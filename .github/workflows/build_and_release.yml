@@ -17,7 +17,7 @@ jobs:
           rustup target add thumbv7em-none-eabihf
 
       - name: Install flip-link
-        run: cd / && cargo install flip-link
+        run: cd / && cargo install --debug flip-link
 
       - name: Build neotron-bmc-pico for F030
         run: |
