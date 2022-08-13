@@ -1,6 +1,6 @@
 [package]
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
-name = "neotron-bmc"
+name = "neotron-bmc-pico"
 edition = "2018"
 version = "0.2.0"
 
