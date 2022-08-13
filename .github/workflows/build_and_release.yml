@@ -1,0 +1,68 @@
+on: [push, pull_request]
+name: Upload Release
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+        with:
+          submodules: true
+
+      - name: Add targets
+        run: |
+          rustup target add thumbv6m-none-eabi
+          rustup target add thumbv7em-none-eabihf
+
+      - name: Install flip-link
+        run: cd / && cargo install --debug flip-link
+
+      - name: Build neotron-bmc-pico for F030
+        run: |
+          cd neotron-bmc-pico
+          cargo build --release --verbose --target=thumbv6m-none-eabi --features=stm32f030x6
+          cd target/thumbv6m-none-eabi/release
+          mv neotron-bmc-pico neotron-bmc-pico-f030
+
+      - name: Build neotron-bmc-pico for F031
+        run: |
+          cd neotron-bmc-pico
+          cargo build --release --verbose --target=thumbv6m-none-eabi --features=stm32f031
+          cd target/thumbv6m-none-eabi/release
+          mv neotron-bmc-pico neotron-bmc-pico-f031
+
+      - name: Build neotron-bmc-nucleo
+        run: |
+          cd neotron-bmc-nucleo
+          cargo build --release --verbose --target=thumbv7em-none-eabihf
+
+      - name: Get Branch Name
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
+        id: branch_name
+        run: |
+          echo ::set-output name=SOURCE_TAG::${GITHUB_REF#refs/tags/}
+
+      - name: Create Release
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ steps.branch_name.outputs.SOURCE_TAG }}
+          draft: false
+          prerelease: false
+
+      - name: Upload files to Release
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc-pico-f030
+            neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc-pico-f031
+            neotron-bmc-nucleo/target/thumbv7em-none-eabihf/release/neotron-bmc-nucleo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

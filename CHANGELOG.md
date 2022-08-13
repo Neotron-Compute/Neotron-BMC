@@ -4,6 +4,9 @@
 
 * None
 
+## v0.3.0
+* Add STM32F030 support to neotron-bmc-pico
+
 ## v0.2.0
 * Change to blink power LED when in standby
 * Actually controls DC power and reset (but doesn't check the voltage rails yet)
