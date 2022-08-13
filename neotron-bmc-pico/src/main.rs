@@ -77,7 +77,7 @@ mod app {
 		led_power: PB0<Output<PushPull>>,
 		/// The status LED (D1102)
 		#[lock_free]
-		_led_status: PB1<Output<PushPull>>,
+		_buzzer_pwm: PB1<Output<PushPull>>,
 		/// The FTDI UART header (J105)
 		#[lock_free]
 		serial: serial::Serial<pac::USART1, PA9<Alternate<AF1>>, PA10<Alternate<AF1>>>,
@@ -187,7 +187,7 @@ mod app {
 			_pin_uart_cts,
 			_pin_uart_rts,
 			mut led_power,
-			mut _led_status,
+			mut _buzzer_pwm,
 			button_power,
 			button_reset,
 			mut pin_dc_on,
@@ -226,7 +226,7 @@ mod app {
 		serial.listen(serial::Event::Rxne);
 
 		led_power.set_low().unwrap();
-		_led_status.set_low().unwrap();
+		_buzzer_pwm.set_low().unwrap();
 
 		// Set EXTI15 to use PORT A (PA15)
 		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
@@ -249,7 +249,7 @@ mod app {
 			_pin_uart_cts,
 			_pin_uart_rts,
 			led_power,
-			_led_status,
+			_buzzer_pwm,
 			button_power,
 			button_reset,
 			state_dc_power_enabled: DcPowerState::Off,
