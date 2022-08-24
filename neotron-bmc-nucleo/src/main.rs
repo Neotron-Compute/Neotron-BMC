@@ -1,13 +1,16 @@
+//! Neotron BMC Firmware
+//!
+//! This is the firmware for the Neotron Board Management Controller (BMC). It
+//! controls the power, reset, UART and PS/2 ports, but running on an ST Nucleo
+//! instead of a real Neotron board. For more details, see the `README.md` file.
+//!
+//! # Licence
+//! This source code as a whole is licensed under the GPL v3. Third-party crates
+//! are covered by their respective licences.
+
 #![no_main]
 #![no_std]
 
-///! Neotron BMC Firmware
-///!
-///! This is the firmware for the Neotron Board Management Controller (BMC). It controls the power, reset, UART and PS/2 ports on a Neotron mainboard.
-///! For more details, see the `README.md` file.
-///!
-///! # Licence
-///! This source code as a whole is licensed under the GPL v3. Third-party crates are covered by their respective licences.
 use cortex_m::interrupt::free as disable_interrupts;
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;

@@ -22,7 +22,7 @@ The NBMC appears to the main Neotron system processor as an Expansion Device. As
 
 ### Neotron Pico
 
-The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6) microcontroller, as fitted to a [Neotron Pico](https://github.com/neotron-compute/neotron-pico).
+The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F030K6T6) microcontroller, as fitted to a [Neotron Pico](https://github.com/neotron-compute/neotron-pico).
 
 See the [board-specific README](./neotron-bmc-pico/README.md)
 
