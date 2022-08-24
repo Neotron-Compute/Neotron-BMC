@@ -6,7 +6,7 @@ This folder is for the Board Management Controller (BMC) when running on an STM3
 
 ## Hardware Interface
 
-The NBMC also supports running on an ST Nucleo-F401RE, for development and debugging purposes. The STM32F401RET6U MCU has:
+This firmware runs on an ST Nucleo-F401RE, for development and debugging purposes. The STM32F401RET6U MCU has:
 
 * 32-bit Arm Cortex-M4 Core
 * 3.3V I/O (5V tolerant)

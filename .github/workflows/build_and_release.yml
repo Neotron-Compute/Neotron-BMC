@@ -19,24 +19,11 @@ jobs:
       - name: Install flip-link
         run: cd / && cargo install --debug flip-link
 
-      - name: Build neotron-bmc-pico for F030
-        run: |
-          cd neotron-bmc-pico
-          cargo build --release --verbose --target=thumbv6m-none-eabi --features=stm32f030x6
-          cd target/thumbv6m-none-eabi/release
-          mv neotron-bmc-pico neotron-bmc-pico-f030
-
-      - name: Build neotron-bmc-pico for F031
-        run: |
-          cd neotron-bmc-pico
-          cargo build --release --verbose --target=thumbv6m-none-eabi --features=stm32f031
-          cd target/thumbv6m-none-eabi/release
-          mv neotron-bmc-pico neotron-bmc-pico-f031
+      - name: Build neotron-bmc-pico
+        run: cd neotron-bmc-pico && DEFMT_LOG=info cargo build --release --verbose --target=thumbv6m-none-eabi
 
       - name: Build neotron-bmc-nucleo
-        run: |
-          cd neotron-bmc-nucleo
-          cargo build --release --verbose --target=thumbv7em-none-eabihf
+        run: cd neotron-bmc-nucleo && DEFMT_LOG=info cargo build --release --verbose --target=thumbv7em-none-eabihf
 
       - name: Get Branch Name
         if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')

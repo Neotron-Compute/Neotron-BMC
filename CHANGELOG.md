@@ -4,6 +4,10 @@
 
 * None
 
+## v0.3.1
+* Reset button triggers 250ms low pulse
+* Fix STM32F030 support and remove STM32F031 support for neotron-bmc-pico
+
 ## v0.3.0
 * Add STM32F030 support to neotron-bmc-pico
 
