@@ -2,7 +2,7 @@
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>", "Aïssata 'Ai' Maiga <aimaiga2@gmail.com>"]
 name = "neotron-bmc-nucleo"
 edition = "2018"
-version = "0.3.0"
+version = "0.3.1"
 
 [dependencies]
 cortex-m = "0.7.1"
