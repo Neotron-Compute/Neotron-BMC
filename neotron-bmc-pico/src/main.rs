@@ -1,13 +1,16 @@
+//! Neotron BMC Firmware
+//!
+//! This is the firmware for the Neotron Board Management Controller (BMC) as
+//! fitted to a Neotron Pico. It controls the power, reset, UART and PS/2 ports
+//! on that Neotron mainboard. For more details, see the `README.md` file.
+//!
+//! # Licence
+//! This source code as a whole is licensed under the GPL v3. Third-party crates
+//! are covered by their respective licences.
+
 #![no_main]
 #![no_std]
 
-///! Neotron BMC Firmware
-///!
-///! This is the firmware for the Neotron Board Management Controller (BMC). It controls the power, reset, UART and PS/2 ports on a Neotron mainboard.
-///! For more details, see the `README.md` file.
-///!
-///! # Licence
-///! This source code as a whole is licensed under the GPL v3. Third-party crates are covered by their respective licences.
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
@@ -19,7 +22,6 @@ use stm32f0xx_hal::{
 	prelude::*,
 	serial,
 };
-use systick_monotonic::{fugit::Duration, Systick};
 
 use neotron_bmc_pico as _;
 
@@ -27,12 +29,13 @@ use neotron_bmc_pico as _;
 static VERSION: &'static str = include_str!(concat!(env!("OUT_DIR"), "/version.txt"));
 
 /// At what rate do we blink the status LED when we're running?
-const LED_PERIOD: Duration<u64, 1, 1_000_000> =
-	Duration::<u64, 1, 1_000_000>::from_ticks(1_000_000);
+const LED_PERIOD_MS: u64 = 1000;
 
 /// How often we poll the power and reset buttons in milliseconds.
-const DEBOUNCE_POLL_INTERVAL: Duration<u64, 1, 1_000_000> =
-	Duration::<u64, 1, 1_000_000>::from_ticks(75_000);
+const DEBOUNCE_POLL_INTERVAL_MS: u64 = 75;
+
+/// Length of a reset pulse, in milliseconds
+const RESET_DURATION_MS: u64 = 250;
 
 /// The states we can be in controlling the DC power
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -66,9 +69,10 @@ pub struct RegisterState {
 	firmware_version: &'static str,
 }
 
-#[app(device = crate::pac, peripherals = true, dispatchers = [USB])]
+#[app(device = crate::pac, peripherals = true, dispatchers = [USB, USART3_4_5_6, TIM14, TIM15, TIM16, TIM17, PVD])]
 mod app {
 	use super::*;
+	use systick_monotonic::*; // Implements the `Monotonic` trait
 
 	#[shared]
 	struct Shared {
@@ -121,12 +125,9 @@ mod app {
 		/// Our register state
 		#[lock_free]
 		_register_state: RegisterState,
-		/// Keyboard bytes sink
+		/// Keyboard words sink
 		#[lock_free]
 		kb_q_out: Consumer<'static, u16, 8>,
-		/// Keyboard bytes source
-		#[lock_free]
-		kb_q_in: Producer<'static, u16, 8>,
 	}
 
 	#[local]
@@ -135,14 +136,16 @@ mod app {
 		press_button_power_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Tracks power button state for long presses. 75ms x 16 = 1200ms is a long press
 		press_button_power_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
-		/// Tracks reset button state for long presses. 75ms x 16 = 1200ms is a long press
-		press_button_reset_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
+		/// Tracks reset button state for short presses. 75ms x 2 = 150ms is a long press
+		press_button_reset_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Keyboard PS/2 decoder
 		kb_decoder: Ps2Decoder,
+		/// Keyboard words source
+		kb_q_in: Producer<'static, u16, 8>,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
-	type MyMono = systick_monotonic::Systick<1_000_000>;
+	type MyMono = Systick<200>; // 200 Hz (= 5ms) timer tick
 
 	/// The entry point to our application.
 	///
@@ -155,7 +158,7 @@ mod app {
 		defmt::info!("Neotron BMC version {:?} booting", VERSION);
 
 		let dp: pac::Peripherals = ctx.device;
-		let cp: pac::CorePeripherals = ctx.core;
+		let cp: cortex_m::Peripherals = ctx.core;
 
 		let mut flash = dp.FLASH;
 		let mut rcc = dp
@@ -166,8 +169,9 @@ mod app {
 			.sysclk(48.mhz())
 			.freeze(&mut flash);
 
-		defmt::info!("Configuring SYST...");
-		let mono = Systick::new(cp.SYST, 48_000_000);
+		defmt::info!("Configuring SysTick...");
+		// Initialize the monotonic timer using the Cortex-M SysTick peripheral
+		let mono = Systick::new(cp.SYST, rcc.clocks.sysclk().0);
 
 		defmt::info!("Creating pins...");
 		let gpioa = dp.GPIOA.split(&mut rcc);
@@ -263,14 +267,14 @@ mod app {
 			_register_state: RegisterState {
 				firmware_version: concat!("Neotron BMC ", env!("CARGO_PKG_VERSION")),
 			},
-			kb_q_in,
 			kb_q_out,
 		};
 		let local_resources = Local {
 			press_button_power_short: debouncr::debounce_2(false),
 			press_button_power_long: debouncr::debounce_16(false),
-			press_button_reset_long: debouncr::debounce_16(false),
+			press_button_reset_short: debouncr::debounce_2(false),
 			kb_decoder: Ps2Decoder::new(),
+			kb_q_in,
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -278,19 +282,20 @@ mod app {
 
 	/// Our idle task.
 	///
-	/// This task is called when there is nothing else to do. We
-	/// do a little logging, then put the CPU to sleep waiting for an interrupt.
+	/// This task is called when there is nothing else to do.
 	#[idle(shared = [kb_q_out])]
 	fn idle(ctx: idle::Context) -> ! {
 		defmt::info!("Idle is running...");
 		loop {
 			if let Some(word) = ctx.shared.kb_q_out.dequeue() {
 				if let Some(byte) = Ps2Decoder::check_word(word) {
-					defmt::info!("< KB {:x}", byte);
+					defmt::info!("< KB 0x{:x}", byte);
 				} else {
-					defmt::info!("< Bad KB {:x}", word);
+					defmt::warn!("< Bad KB 0x{:x}", word);
 				}
 			}
+
+			// TODO: Read ADC for 3.3V and 5.0V rails and check good
 		}
 	}
 
@@ -302,15 +307,15 @@ mod app {
 	#[task(
 		binds = EXTI4_15,
 		priority = 4,
-		shared = [ps2_clk0, ps2_dat0, exti, kb_q_in],
-		local = [kb_decoder]
+		shared = [ps2_clk0, ps2_dat0, exti],
+		local = [kb_decoder, kb_q_in]
 	)]
 	fn exti4_15_interrupt(ctx: exti4_15_interrupt::Context) {
 		let data_bit = ctx.shared.ps2_dat0.is_high().unwrap();
 		// Do we have a complete word (and if so, is the parity OK)?
 		if let Some(data) = ctx.local.kb_decoder.add_bit(data_bit) {
 			// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
-			ctx.shared.kb_q_in.enqueue(data).unwrap();
+			ctx.local.kb_q_in.enqueue(data).unwrap();
 		}
 		// Clear the pending flag
 		ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
@@ -347,19 +352,22 @@ mod app {
 				ctx.shared.led_power.set_high().unwrap();
 				*ctx.local.led_state = true;
 			}
-			led_power_blink::spawn_after(LED_PERIOD).unwrap();
+			led_power_blink::spawn_after(LED_PERIOD_MS.millis()).unwrap();
 		}
 	}
 
 	/// This task polls our power and reset buttons.
 	///
-	/// We poll them rather than setting up an interrupt as we need to debounce them, which involves waiting a short period and checking them again. Given that we have to do that, we might as well not bother with the interrupt.
+	/// We poll them rather than setting up an interrupt as we need to debounce
+	/// them, which involves waiting a short period and checking them again.
+	/// Given that we have to do that, we might as well not bother with the
+	/// interrupt.
 	#[task(
 		shared = [
 			led_power, button_power, button_reset,
 			state_dc_power_enabled, pin_sys_reset, pin_dc_on
 		],
-		local = [ press_button_power_short, press_button_power_long, press_button_reset_long ]
+		local = [ press_button_power_short, press_button_power_long, press_button_reset_short ]
 	)]
 	fn button_poll(ctx: button_poll::Context) {
 		// Poll buttons
@@ -369,7 +377,18 @@ mod app {
 		// Update state
 		let pwr_short_edge = ctx.local.press_button_power_short.update(pwr_pressed);
 		let pwr_long_edge = ctx.local.press_button_power_long.update(pwr_pressed);
-		let rst_long_edge = ctx.local.press_button_reset_long.update(rst_pressed);
+		let rst_long_edge = ctx.local.press_button_reset_short.update(rst_pressed);
+
+		defmt::trace!(
+			"pwr/rst {}/{} {}",
+			pwr_pressed,
+			rst_pressed,
+			match rst_long_edge {
+				Some(debouncr::Edge::Rising) => "rising",
+				Some(debouncr::Edge::Falling) => "falling",
+				None => "-",
+			}
+		);
 
 		// Dispatch event
 		match (
@@ -399,7 +418,6 @@ mod app {
 				ctx.shared.led_power.set_low().unwrap();
 				defmt::info!("Power off!");
 				ctx.shared.pin_sys_reset.set_low().unwrap();
-				// TODO: Wait for 100ms for chips to stop?
 				ctx.shared.pin_dc_on.set_low().unwrap();
 				// Start LED blinking again
 				led_power_blink::spawn().unwrap();
@@ -409,51 +427,70 @@ mod app {
 			}
 		}
 
-		if let Some(debouncr::Edge::Falling) = rst_long_edge {
-			defmt::info!("Reset!");
-			ctx.shared.pin_sys_reset.set_low().unwrap();
-			// TODO: This pulse will be very short. We should spawn a task to
-			// take it out of reset after about 100ms.
-			ctx.shared.pin_sys_reset.set_high().unwrap();
+		// Did reset get a long press?
+		if let Some(debouncr::Edge::Rising) = rst_long_edge {
+			// Is the board powered on? Don't do a reset if it's powered off.
+			if *ctx.shared.state_dc_power_enabled == DcPowerState::On {
+				defmt::info!("Reset!");
+				ctx.shared.pin_sys_reset.set_low().unwrap();
+				// Returns an error if it's already scheduled
+				let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
+			}
 		}
 
 		// Re-schedule the timer interrupt
-		button_poll::spawn_after(DEBOUNCE_POLL_INTERVAL).unwrap();
+		button_poll::spawn_after(DEBOUNCE_POLL_INTERVAL_MS.millis()).unwrap();
+	}
+
+	/// Return the reset line high (inactive), but only if we're still powered on.
+	#[task(shared = [pin_sys_reset, state_dc_power_enabled])]
+	fn exit_reset(ctx: exit_reset::Context) {
+		defmt::debug!("End reset");
+		if *ctx.shared.state_dc_power_enabled == DcPowerState::On {
+			ctx.shared.pin_sys_reset.set_high().unwrap();
+		}
 	}
 }
 
 impl Ps2Decoder {
-	fn new() -> Ps2Decoder {
+	/// Create a new PS/2 Decoder
+	const fn new() -> Ps2Decoder {
 		Ps2Decoder {
 			bit_mask: 1,
 			collector: 0,
 		}
 	}
 
+	/// Reset the PS/2 decoder
 	fn reset(&mut self) {
-		self.bit_mask = 0;
+		self.bit_mask = 1;
 		self.collector = 0;
 	}
 
+	/// Add a bit, and if we have enough, return the 11-bit PS/2 word.
 	fn add_bit(&mut self, bit: bool) -> Option<u16> {
 		if bit {
 			self.collector |= self.bit_mask;
 		}
-		self.bit_mask <<= 1;
-		if self.bit_mask == 0b100000000000 {
+		// Was that the last bit we needed?
+		if self.bit_mask == 0b100_0000_0000 {
 			let result = self.collector;
 			self.reset();
 			Some(result)
 		} else {
+			self.bit_mask <<= 1;
 			None
 		}
 	}
 
 	/// Check 11-bit word has 1 start bit, 1 stop bit and an odd parity bit.
+	///
+	/// If so, you get back the 8 bit data within the word. Otherwise you get
+	/// None.
 	fn check_word(word: u16) -> Option<u8> {
-		let start_bit = (word & 0x0001) != 0;
-		let parity_bit = (word & 0x0200) != 0;
-		let stop_bit = (word & 0x0400) != 0;
+		let start_bit = (word & 0b000_0000_0001) != 0;
+		let parity_bit = (word & 0b010_0000_0000) != 0;
+		let stop_bit = (word & 0b100_0000_0000) != 0;
 		let data = ((word >> 1) & 0xFF) as u8;
 
 		if start_bit {
@@ -466,7 +503,7 @@ impl Ps2Decoder {
 
 		let need_parity = (data.count_ones() % 2) == 0;
 
-		// Odd parity, so these must not match
+		// Check we have the correct parity bit
 		if need_parity != parity_bit {
 			return None;
 		}

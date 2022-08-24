@@ -16,6 +16,7 @@ fn main() {
 	println!("cargo:rustc-link-search={}", out.display());
 	println!("cargo:rerun-if-changed=memory.x");
 
+	// Generate a file containing the firmware version
 	let version_output = std::process::Command::new("git")
 		.current_dir(env::var_os("CARGO_MANIFEST_DIR").unwrap())
 		.args(&["describe", "--tags", "--all", "--dirty"])
@@ -23,5 +24,10 @@ fn main() {
 		.expect("running git-describe");
 	assert!(version_output.status.success());
 
-	std::fs::write(out.join("version.txt"), version_output.stdout).expect("writing version file");
+	// Remove the trailing newline
+	let mut output = version_output.stdout;
+	output.pop();
+
+	// Write the file
+	std::fs::write(out.join("version.txt"), output).expect("writing version file");
 }

@@ -2,17 +2,15 @@
 
 ## Introduction
 
-This folder is for the Board Management Controller (BMC) on a [Neotron Pico](https://github.com/neotron-compute/neotron-pico).
+This firmware is designed to run on an ST Micro STM32F0 (STM32F030K6T6) microcontroller as fitted to the Neotron Pico.
 
-## Hardware Interface
-
-The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6 or STM32F030K6T6) microcontroller
+The MCU has:
 
 * 32-bit Arm Cortex-M0+ Core
-* 3.3V I/O (5V tolerant)
+* 3.3V I/O (mostly 5V tolerant)
 * 32 KiB Flash
 * 4 KiB SRAM
-* LQFP-32 package (0.8mm pitch, 7mm x 7mm)
+* LQFP-32 package (0.8mm pitch)
 
 
 | Pin  | Name | Signal      | Function                                     |
@@ -27,8 +25,8 @@ The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6 or ST
 | 11   | PA5  | SPI1_SCK    | SPI Clock Input                              |
 | 12   | PA6  | SPI1_CIPO   | SPI Data Output                              |
 | 13   | PA7  | SPI1_COPI   | SPI Data Input                               |
-| 14   | PB0  | LED0        | Output for Power LED                         |
-| 15   | PB1  | LED1        | Output for Status LED                        |
+| 14   | PB0  | LED         | Output for Power LED                         |
+| 15   | PB1  | BUZZER      | PWM Output for Buzzer                        |
 | 18   | PA8  | IRQ_nHOST   | Interrupt Output to the Host (active low)    |
 | 19   | PA9  | USART1_TX   | UART Transmit Output                         |
 | 20   | PA10 | USART1_RX   | UART Receive Input                           |
@@ -45,8 +43,9 @@ The NBMC firmware is designed to run on an ST Micro STM32F0 (STM32F031K6T6 or ST
 
 Note that in the above table, the UART signals are wired as _Data Terminal Equipment (DTE)_ (i.e. like a PC, not like a Modem). Connect the NMBC *UART Transmit Output* pin to the *Input* pin of something like an FTDI TTL-232R-3V3 cable.
 
-This hardware design should also be pin-compatible with the following SoCs (although this firmware may need changes):
+This design should also be pin-compatible with the following SoCs (although this firmware may need changes):
 
+* STM32F031K6Tx
 * STM32F042K4Tx
 * STM32F042K6Tx
 * STM32L071KBTx
@@ -59,7 +58,7 @@ Note that not all STM32 pins are 5V-tolerant, and the PS/2 protocol is a 5V open
 
 ## Build Requirements
 
-1. rustup and Rust
+1. `rustup` and Rust
    - see https://www.rust-lang.org
 2. The `thumbv6m-none-eabi` target
    - run `rustup target add thumbv6m-none-eabi`
@@ -71,17 +70,17 @@ Note that not all STM32 pins are 5V-tolerant, and the PS/2 protocol is a 5V open
 Then to build and flash for an STM32F031K6T6, connect a probe supported by probe-rs (such as a SEGGER J-Link, or an ST-Link) and run:
 
 ```
-$ cargo run --release --features stm32f031
+$ DEFMT_LOG=info cargo run --release
 ```
 
-For an STM32F030K6T6, run:
+You should see logging messages from the board on your terminal. To increase the logging level, try:
 
+Then to build and flash, connect a probe supported by probe-rs (such as a SEGGER J-Link, or an ST-Link) and run:
 
 ```
-$ cargo run --release --features stm32f030x6
+$ DEFMT_LOG=debug cargo run --release
 ```
 
 ## Licence
 
 This source code as a whole is licensed under the GPL v3. Third-party crates are covered by their respective licences.
-
