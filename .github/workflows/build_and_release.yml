@@ -48,8 +48,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc-pico-f030
-            neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc-pico-f031
+            neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc-pico
             neotron-bmc-nucleo/target/thumbv7em-none-eabihf/release/neotron-bmc-nucleo
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
