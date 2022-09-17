@@ -14,12 +14,13 @@
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA9},
+	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA9},
 	gpio::gpiob::{PB0, PB1, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
 	gpio::{Alternate, Floating, Input, Output, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
+	rcc::Rcc,
 	serial,
 };
 
@@ -128,6 +129,9 @@ mod app {
 		/// Keyboard words sink
 		#[lock_free]
 		kb_q_out: Consumer<'static, u16, 8>,
+		/// SPI Peripheral
+		#[lock_free]
+		spi: SpiPeripheral,
 	}
 
 	#[local]
@@ -200,22 +204,48 @@ mod app {
 			_ps2_clk1,
 			ps2_dat0,
 			_ps2_dat1,
+			pin_cs,
+			pin_sck,
+			pin_cipo,
+			pin_copi,
 		) = cortex_m::interrupt::free(|cs| {
 			(
+				// uart_tx,
 				gpioa.pa9.into_alternate_af1(cs),
+				// uart_rx,
 				gpioa.pa10.into_alternate_af1(cs),
+				// _pin_uart_cts,
 				gpioa.pa11.into_alternate_af1(cs),
+				// _pin_uart_rts,
 				gpioa.pa12.into_alternate_af1(cs),
+				// led_power,
 				gpiob.pb0.into_push_pull_output(cs),
+				// _buzzer_pwm,
 				gpiob.pb1.into_push_pull_output(cs),
+				// button_power,
 				gpiof.pf0.into_pull_up_input(cs),
+				// button_reset,
 				gpiof.pf1.into_pull_up_input(cs),
+				// pin_dc_on,
 				gpioa.pa3.into_push_pull_output(cs),
+				// pin_sys_reset,
 				gpioa.pa2.into_push_pull_output(cs),
+				// ps2_clk0,
 				gpioa.pa15.into_floating_input(cs),
+				// _ps2_clk1,
 				gpiob.pb3.into_floating_input(cs),
+				// ps2_dat0,
 				gpiob.pb4.into_floating_input(cs),
+				// _ps2_dat1,
 				gpiob.pb5.into_floating_input(cs),
+				// pin_cs,
+				gpioa.pa4.into_floating_input(cs),
+				// pin_sck,
+				gpioa.pa5.into_floating_input(cs),
+				// pin_cipo,
+				gpioa.pa6.into_floating_input(cs),
+				// pin_copi,
+				gpioa.pa7.into_floating_input(cs),
 			)
 		});
 
@@ -229,11 +259,14 @@ mod app {
 
 		serial.listen(serial::Event::Rxne);
 
+		// Put SPI into Peripheral mode (i.e. CLK is an input) and enable the RX interrupt.
+		let spi = SpiPeripheral::new(dp.SPI1, (pin_sck, pin_copi, pin_cipo), 8_000_000, &mut rcc);
+
 		led_power.set_low().unwrap();
 		_buzzer_pwm.set_low().unwrap();
 
-		// Set EXTI15 to use PORT A (PA15)
-		dp.SYSCFG.exticr4.write(|w| w.exti15().pa15());
+		// Set EXTI15 to use PORT A (PA15) - button input
+		dp.SYSCFG.exticr4.modify(|_r, w| w.exti15().pa15());
 
 		// Enable EXTI15 interrupt as external falling edge
 		dp.EXTI.imr.modify(|_r, w| w.mr15().set_bit());
@@ -268,6 +301,7 @@ mod app {
 				firmware_version: concat!("Neotron BMC ", env!("CARGO_PKG_VERSION")),
 			},
 			kb_q_out,
+			spi,
 		};
 		let local_resources = Local {
 			press_button_power_short: debouncr::debounce_2(false),
@@ -311,14 +345,18 @@ mod app {
 		local = [kb_decoder, kb_q_in]
 	)]
 	fn exti4_15_interrupt(ctx: exti4_15_interrupt::Context) {
-		let data_bit = ctx.shared.ps2_dat0.is_high().unwrap();
-		// Do we have a complete word (and if so, is the parity OK)?
-		if let Some(data) = ctx.local.kb_decoder.add_bit(data_bit) {
-			// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
-			ctx.local.kb_q_in.enqueue(data).unwrap();
+		let pr = ctx.shared.exti.pr.read();
+		// Is this EXT15 (PS/2 Port 0 clock input)
+		if pr.pr15().bit_is_set() {
+			let data_bit = ctx.shared.ps2_dat0.is_high().unwrap();
+			// Do we have a complete word?
+			if let Some(data) = ctx.local.kb_decoder.add_bit(data_bit) {
+				// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
+				ctx.local.kb_q_in.enqueue(data).unwrap();
+			}
+			// Clear the pending flag
+			ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
 		}
-		// Clear the pending flag
-		ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
 	}
 
 	/// This is the USART1 task.
@@ -334,6 +372,23 @@ mod app {
 			}
 			Err(_) => {
 				defmt::warn!("<< UART None?");
+			}
+		}
+	}
+
+	/// This is the SPI1 task.
+	///
+	/// It fires whenever there is new data received on SPI1. We should flag to the host
+	/// that data is available.
+	#[task(binds = SPI1, shared = [spi])]
+	fn spi1_interrupt(ctx: spi1_interrupt::Context) {
+		// Reading the register clears the RX-Not-Empty-Interrupt flag.
+		match ctx.shared.spi.read() {
+			Some(b) => {
+				defmt::info!("<< SPI {:x}", b);
+			}
+			None => {
+				defmt::info!("<< SPI ??");
 			}
 		}
 	}
@@ -448,6 +503,129 @@ mod app {
 		defmt::debug!("End reset");
 		if *ctx.shared.state_dc_power_enabled == DcPowerState::On {
 			ctx.shared.pin_sys_reset.set_high().unwrap();
+		}
+	}
+}
+
+pub struct SpiPeripheral {
+	dev: pac::SPI1,
+}
+
+impl SpiPeripheral {
+	pub fn new<T>(dev: pac::SPI1, _pins: T, speed_hz: u32, rcc: &mut Rcc) -> SpiPeripheral {
+		defmt::info!(
+			"pclk = {}, incoming spi_clock = {}",
+			rcc.clocks.pclk().0,
+			speed_hz
+		);
+
+		let mode = embedded_hal::spi::MODE_0;
+
+		// We are following DM00043574, Section 30.5.1 Configuration of SPI
+
+		// 2. Write to the SPI_CR1 register
+		dev.cr1.write(|w| {
+			// 2a. Configure the serial clock baud rate
+			match rcc.clocks.pclk().0 / speed_hz {
+				0 => unreachable!(),
+				1..=2 => {
+					w.br().div2();
+				}
+				3..=5 => {
+					w.br().div4();
+				}
+				6..=11 => {
+					w.br().div8();
+				}
+				12..=23 => {
+					w.br().div16();
+				}
+				24..=47 => {
+					w.br().div32();
+				}
+				48..=95 => {
+					w.br().div64();
+				}
+				96..=191 => {
+					w.br().div128();
+				}
+				_ => {
+					w.br().div256();
+				}
+			}
+			// 2b. Configure the CPHA and CPOL bits. Apologies for the outdated terminology.
+			if mode.phase == embedded_hal::spi::Phase::CaptureOnSecondTransition {
+				w.cpha().second_edge();
+			} else {
+				w.cpha().first_edge();
+			}
+			if mode.polarity == embedded_hal::spi::Polarity::IdleHigh {
+				w.cpol().idle_high();
+			} else {
+				w.cpol().idle_low();
+			}
+			// 2c. Select simplex or half-duplex mode (nope, neither of those)
+			w.rxonly().clear_bit();
+			w.bidimode().clear_bit();
+			w.bidioe().clear_bit();
+			// 2d. Configure the LSBFIRST bit to define the frame format
+			w.lsbfirst().clear_bit();
+			// 2e. Configure the CRCL and CRCEN bits if CRC is needed (it is not)
+			w.crcen().disabled();
+			// 2f. Turn off soft-slave-management (SSM) and slave-select-internal (SSI)
+			w.ssm().disabled();
+			w.ssi().slave_selected();
+			// 2g. Set the Master bit low for slave mode
+			w.mstr().slave();
+			w
+		});
+
+		// 3. Write to SPI_CR2 register
+		dev.cr2.write(|w| {
+			// 3a. Configure the DS[3:0] bits to select the data length for the transfer.
+			unsafe { w.ds().bits(0b111) };
+			// 3b. Disable hard-output on the CS pin
+			w.ssoe().disabled();
+			// 3c. Frame Format
+			w.frf().motorola();
+			// 3d. Set NSSP bit if required (we don't want NSS Pulse mode)
+			w.nssp().no_pulse();
+			// 3e. Configure the FRXTH bit.
+			w.frxth().quarter();
+			// 3f. LDMA_TX and LDMA_RX for DMA mode - not used
+			// Extra: Turn on RX Not Empty Interrupt Enable
+			w.rxneie().set_bit();
+			w
+		});
+
+		// 4. SPI_CRCPR - not required
+
+		// 5. DMA registers - not required
+
+		// Finally, enable SPI
+		dev.cr1.modify(|_r, w| {
+			w.spe().enabled();
+			w
+		});
+
+		SpiPeripheral { dev }
+	}
+
+	fn has_rx_data(&self) -> bool {
+		self.dev.sr.read().rxne().is_not_empty()
+	}
+
+	fn raw_read(&mut self) -> u8 {
+		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
+		// So force a 16-bit read.
+		unsafe { core::ptr::read_volatile(&self.dev.dr as *const _ as *const u8) }
+	}
+
+	pub fn read(&mut self) -> Option<u8> {
+		if self.has_rx_data() {
+			Some(self.raw_read())
+		} else {
+			None
 		}
 	}
 }
