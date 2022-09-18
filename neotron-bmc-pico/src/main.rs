@@ -419,7 +419,7 @@ mod app {
 							[usize::from(offset)];
 						ctx.shared.spi.lock(|s| s.reply(c));
 					}
-					_ => ctx.shared.spi.lock(|s| s.reply(0xFF)),
+					_ => ctx.shared.spi.lock(|s| s.reply(b' ')),
 				},
 				None => {
 					break;
@@ -657,6 +657,8 @@ impl SpiPeripheral {
 		});
 		self.count = 0;
 		self.reply_byte = None;
+		// Load our default response. When the FIFO underflows we will continue
+		// to get this byte every time.
 		self.raw_write(0xFF);
 	}
 
