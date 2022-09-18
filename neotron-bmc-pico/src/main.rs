@@ -244,7 +244,12 @@ mod app {
 				// pin_sck,
 				gpioa.pa5.into_alternate_af0(cs),
 				// pin_cipo,
-				gpioa.pa6.into_alternate_af0(cs),
+				{
+					// Force 'high speed' mode first, then go into AF0 (high
+					// speed mode is sticky in this HAL revision).
+					let pin = gpioa.pa6.into_push_pull_output_hs(cs);
+					pin.into_alternate_af0(cs)
+				},
 				// pin_copi,
 				gpioa.pa7.into_alternate_af0(cs),
 			)
