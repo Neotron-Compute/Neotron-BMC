@@ -20,7 +20,6 @@ use stm32f0xx_hal::{
 	gpio::{Alternate, Floating, Input, Output, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
-	rcc::Rcc,
 	serial,
 };
 
@@ -48,20 +47,6 @@ pub enum DcPowerState {
 	On = 2,
 	/// We are fully off.
 	Off = 0,
-}
-
-/// Handles decoding incoming PS/2 packets
-///
-/// Each packet has 11 bits:
-///
-/// * Start Bit
-/// * 8 Data Bits (LSB first)
-/// * Parity Bit
-/// * Stop Bit
-#[derive(Debug)]
-pub struct Ps2Decoder {
-	bit_mask: u16,
-	collector: u16,
 }
 
 /// This is our system state, as accessible via SPI reads and writes.
@@ -130,7 +115,7 @@ mod app {
 		#[lock_free]
 		kb_q_out: Consumer<'static, u16, 8>,
 		/// SPI Peripheral
-		spi: SpiPeripheral,
+		spi: neotron_bmc_pico::spi::SpiPeripheral<5, 64>,
 		/// CS pin
 		pin_cs: PA4<Input<PullUp>>,
 	}
@@ -144,7 +129,7 @@ mod app {
 		/// Tracks reset button state for short presses. 75ms x 2 = 150ms is a long press
 		press_button_reset_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Keyboard PS/2 decoder
-		kb_decoder: Ps2Decoder,
+		kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder,
 		/// Keyboard words source
 		kb_q_in: Producer<'static, u16, 8>,
 	}
@@ -266,7 +251,12 @@ mod app {
 		serial.listen(serial::Event::Rxne);
 
 		// Put SPI into Peripheral mode (i.e. CLK is an input) and enable the RX interrupt.
-		let spi = SpiPeripheral::new(dp.SPI1, (pin_sck, pin_cipo, pin_copi), 8_000_000, &mut rcc);
+		let spi = neotron_bmc_pico::spi::SpiPeripheral::new(
+			dp.SPI1,
+			(pin_sck, pin_cipo, pin_copi),
+			8_000_000,
+			&mut rcc,
+		);
 
 		led_power.set_low().unwrap();
 		_buzzer_pwm.set_low().unwrap();
@@ -323,7 +313,7 @@ mod app {
 			press_button_power_short: debouncr::debounce_2(false),
 			press_button_power_long: debouncr::debounce_16(false),
 			press_button_reset_short: debouncr::debounce_2(false),
-			kb_decoder: Ps2Decoder::new(),
+			kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder::new(),
 			kb_q_in,
 		};
 		let init = init::Monotonics(mono);
@@ -333,15 +323,38 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [kb_q_out])]
-	fn idle(ctx: idle::Context) -> ! {
+	#[idle(shared = [kb_q_out, spi])]
+	fn idle(mut ctx: idle::Context) -> ! {
 		defmt::info!("Idle is running...");
 		loop {
 			if let Some(word) = ctx.shared.kb_q_out.dequeue() {
-				if let Some(byte) = Ps2Decoder::check_word(word) {
+				if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
 					defmt::info!("< KB 0x{:x}", byte);
 				} else {
 					defmt::warn!("< Bad KB 0x{:x}", word);
+				}
+			}
+
+			let mut rx_buffer = [0u8; 3];
+			let mut has_packet = false;
+			ctx.shared.spi.lock(|spi| {
+				let mut mark_done = false;
+				if let Some(data) = spi.get_received() {
+					if data.len() == 3 {
+						rx_buffer.copy_from_slice(data);
+						mark_done = true;
+						has_packet = true;
+					}
+				}
+				if mark_done {
+					spi.set_transmit(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
+						.unwrap();
+					spi.mark_done();
+				}
+			});
+			if has_packet {
+				if rx_buffer != [0xAA, 0x10, 0x01] {
+					defmt::info!("Bad RX {:?}", rx_buffer);
 				}
 			}
 
@@ -349,11 +362,11 @@ mod app {
 		}
 	}
 
-	/// This is the PS/2 Keyboard task.
+	/// This is the external GPIO interrupt task.
 	///
-	/// It is very high priority, as we can't afford to miss a clock edge.
+	/// It handles PS/2 clock edges, and SPI chip select edges.
 	///
-	/// It fires when there is a falling edge on the PS/2 Keyboard clock pin.
+	/// It is very high priority, as we can't afford to miss a PS/2 clock edge.
 	#[task(
 		binds = EXTI4_15,
 		priority = 4,
@@ -370,16 +383,19 @@ mod app {
 				// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
 				ctx.local.kb_q_in.enqueue(data).unwrap();
 			}
-			// Clear the pending flag
+			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
 		}
 
 		if pr.pr4().bit_is_set() {
 			if ctx.shared.pin_cs.lock(|pin| pin.is_low().unwrap()) {
+				// If incoming Chip Select is low, turn on the SPI engine
 				ctx.shared.spi.lock(|s| s.enable());
 			} else {
+				// If incoming Chip Select is high, turn off the SPI engine
 				ctx.shared.spi.lock(|s| s.disable());
 			}
+			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr4().set_bit());
 		}
 	}
@@ -407,25 +423,9 @@ mod app {
 	/// that data is available.
 	#[task(binds = SPI1, shared = [spi, register_state])]
 	fn spi1_interrupt(mut ctx: spi1_interrupt::Context) {
-		// Reading the register clears the RX-Not-Empty-Interrupt flag.
-		loop {
-			match ctx.shared.spi.lock(|s| s.read()) {
-				Some(b) => match b {
-					offset
-						if usize::from(offset)
-							< ctx.shared.register_state.firmware_version.len() =>
-					{
-						let c = ctx.shared.register_state.firmware_version.as_bytes()
-							[usize::from(offset)];
-						ctx.shared.spi.lock(|s| s.reply(c));
-					}
-					_ => ctx.shared.spi.lock(|s| s.reply(b' ')),
-				},
-				None => {
-					break;
-				}
-			}
-		}
+		ctx.shared.spi.lock(|spi| {
+			spi.handle_isr();
+		});
 	}
 
 	/// This is the LED blink task.
@@ -539,235 +539,6 @@ mod app {
 		if *ctx.shared.state_dc_power_enabled == DcPowerState::On {
 			ctx.shared.pin_sys_reset.set_high().unwrap();
 		}
-	}
-}
-
-pub struct SpiPeripheral {
-	dev: pac::SPI1,
-	count: u8,
-	reply_byte: Option<u8>,
-}
-
-impl SpiPeripheral {
-	pub fn new<SCKPIN, MISOPIN, MOSIPIN>(
-		dev: pac::SPI1,
-		pins: (SCKPIN, MISOPIN, MOSIPIN),
-		speed_hz: u32,
-		rcc: &mut Rcc,
-	) -> SpiPeripheral
-	where
-		SCKPIN: stm32f0xx_hal::spi::SckPin<pac::SPI1>,
-		MISOPIN: stm32f0xx_hal::spi::MisoPin<pac::SPI1>,
-		MOSIPIN: stm32f0xx_hal::spi::MosiPin<pac::SPI1>,
-	{
-		defmt::info!(
-			"pclk = {}, incoming spi_clock = {}",
-			rcc.clocks.pclk().0,
-			speed_hz
-		);
-
-		let mode = embedded_hal::spi::MODE_0;
-
-		// Set SPI up in Controller mode. This will cause the HAL to enable the clocks and power to the IP block.
-		// It also checks the pins are OK.
-		let spi_controller = stm32f0xx_hal::spi::Spi::spi1(dev, pins, mode, 8_000_000u32.hz(), rcc);
-		// Now disassemble the driver so we can set it into Controller mode instead
-		let (dev, _pins) = spi_controller.release();
-
-		// We are following DM00043574, Section 30.5.1 Configuration of SPI
-
-		// 1. Disable SPI
-		dev.cr1.modify(|_r, w| {
-			w.spe().disabled();
-			w
-		});
-
-		// 2. Write to the SPI_CR1 register. Apologies for the outdated terminology.
-		dev.cr1.write(|w| {
-			// 2a. Configure the serial clock baud rate (ignored in peripheral mode)
-			w.br().div2();
-			// 2b. Configure the CPHA and CPOL bits.
-			if mode.phase == embedded_hal::spi::Phase::CaptureOnSecondTransition {
-				w.cpha().second_edge();
-			} else {
-				w.cpha().first_edge();
-			}
-			if mode.polarity == embedded_hal::spi::Polarity::IdleHigh {
-				w.cpol().idle_high();
-			} else {
-				w.cpol().idle_low();
-			}
-			// 2c. Select simplex or half-duplex mode (nope, neither of those)
-			w.rxonly().clear_bit();
-			w.bidimode().clear_bit();
-			w.bidioe().clear_bit();
-			// 2d. Configure the LSBFIRST bit to define the frame format
-			w.lsbfirst().clear_bit();
-			// 2e. Configure the CRCL and CRCEN bits if CRC is needed (it is not)
-			w.crcen().disabled();
-			// 2f. Turn off soft-slave-management (SSM) and slave-select-internal (SSI)
-			w.ssm().disabled();
-			w.ssi().slave_selected();
-			// 2g. Set the Master bit low for slave mode
-			w.mstr().slave();
-			w
-		});
-
-		// 3. Write to SPI_CR2 register
-		dev.cr2.write(|w| {
-			// 3a. Configure the DS[3:0] bits to select the data length for the transfer.
-			unsafe { w.ds().bits(0b111) };
-			// 3b. Disable hard-output on the CS pin
-			w.ssoe().disabled();
-			// 3c. Frame Format
-			w.frf().motorola();
-			// 3d. Set NSSP bit if required (we don't want NSS Pulse mode)
-			w.nssp().no_pulse();
-			// 3e. Configure the FRXTH bit.
-			w.frxth().quarter();
-			// 3f. LDMA_TX and LDMA_RX for DMA mode - not used
-			// Extra: Turn on RX Not Empty Interrupt Enable
-			w.rxneie().set_bit();
-			w
-		});
-
-		// 4. SPI_CRCPR - not required
-
-		// 5. DMA registers - not required
-
-		let mut spi = SpiPeripheral {
-			dev,
-			count: 0,
-			reply_byte: None,
-		};
-
-		// Empty the receive register
-		while spi.read().is_some() {
-			// spin
-		}
-
-		spi
-	}
-
-	/// Enable the SPI peripheral (i.e. when CS is low)
-	fn enable(&mut self) {
-		self.dev.cr1.modify(|_r, w| {
-			w.spe().enabled();
-			w
-		});
-		self.count = 0;
-		self.reply_byte = None;
-		// Load our default response. When the FIFO underflows we will continue
-		// to get this byte every time.
-		self.raw_write(0xFF);
-	}
-
-	/// Disable the SPI peripheral (i.e. when CS is high)
-	fn disable(&mut self) {
-		self.dev.cr1.modify(|_r, w| {
-			w.spe().disabled();
-			w
-		});
-	}
-
-	fn has_rx_data(&self) -> bool {
-		self.dev.sr.read().rxne().is_not_empty()
-	}
-
-	fn raw_read(&mut self) -> u8 {
-		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
-		// So force a 16-bit read.
-		unsafe { core::ptr::read_volatile(&self.dev.dr as *const _ as *const u8) }
-	}
-
-	fn raw_write(&mut self, data: u8) {
-		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
-		// So force a 16-bit read.
-		unsafe { core::ptr::write_volatile(&self.dev.dr as *const _ as *mut u8, data) }
-	}
-
-	pub fn read(&mut self) -> Option<u8> {
-		if self.has_rx_data() {
-			let cmd = self.raw_read();
-			// If we have a reply byte, send it, followed by the default byte
-			if let Some(x) = self.reply_byte.take() {
-				self.raw_write(x);
-				self.raw_write(0xFF);
-			}
-			self.count += 1;
-			// Is this the second byte we got?
-			if self.count == 2 {
-				Some(cmd)
-			} else {
-				None
-			}
-		} else {
-			None
-		}
-	}
-
-	pub fn reply(&mut self, value: u8) {
-		self.reply_byte = Some(value);
-	}
-}
-
-impl Ps2Decoder {
-	/// Create a new PS/2 Decoder
-	const fn new() -> Ps2Decoder {
-		Ps2Decoder {
-			bit_mask: 1,
-			collector: 0,
-		}
-	}
-
-	/// Reset the PS/2 decoder
-	fn reset(&mut self) {
-		self.bit_mask = 1;
-		self.collector = 0;
-	}
-
-	/// Add a bit, and if we have enough, return the 11-bit PS/2 word.
-	fn add_bit(&mut self, bit: bool) -> Option<u16> {
-		if bit {
-			self.collector |= self.bit_mask;
-		}
-		// Was that the last bit we needed?
-		if self.bit_mask == 0b100_0000_0000 {
-			let result = self.collector;
-			self.reset();
-			Some(result)
-		} else {
-			self.bit_mask <<= 1;
-			None
-		}
-	}
-
-	/// Check 11-bit word has 1 start bit, 1 stop bit and an odd parity bit.
-	///
-	/// If so, you get back the 8 bit data within the word. Otherwise you get
-	/// None.
-	fn check_word(word: u16) -> Option<u8> {
-		let start_bit = (word & 0b000_0000_0001) != 0;
-		let parity_bit = (word & 0b010_0000_0000) != 0;
-		let stop_bit = (word & 0b100_0000_0000) != 0;
-		let data = ((word >> 1) & 0xFF) as u8;
-
-		if start_bit {
-			return None;
-		}
-
-		if !stop_bit {
-			return None;
-		}
-
-		let need_parity = (data.count_ones() % 2) == 0;
-
-		// Check we have the correct parity bit
-		if need_parity != parity_bit {
-			return None;
-		}
-
-		Some(data)
 	}
 }
 
