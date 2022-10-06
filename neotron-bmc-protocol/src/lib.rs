@@ -5,6 +5,8 @@
 // Modules and Imports
 // ============================================================================
 
+use defmt::Format;
+
 mod crc;
 
 // ============================================================================
@@ -32,7 +34,7 @@ pub trait Receivable<'a>: Sized {
 // ============================================================================
 
 /// The ways this API can fail
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Format)]
 pub enum Error {
 	BadCrc,
 	BadLength,
@@ -43,7 +45,7 @@ pub enum Error {
 
 /// The kinds of [`Request`] the *Host* can make to the NBMC
 #[repr(u8)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Format)]
 pub enum RequestType {
 	Read = 0xC0,
 	ReadAlt = 0xC1,
@@ -55,7 +57,7 @@ pub enum RequestType {
 
 /// The NBMC returns this code to indicate whether the previous [`Request`] was
 /// succesful or not.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Format)]
 pub enum ResponseResult {
 	/// The [`Request`] was correctly understood and actioned.
 	Ok = 0xA0,
@@ -83,7 +85,7 @@ pub enum ResponseResult {
 // ============================================================================
 
 /// A *Request* made by the *Host* to the *NBMC*
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Format)]
 pub struct Request {
 	pub request_type: RequestType,
 	pub register: u8,
@@ -92,7 +94,7 @@ pub struct Request {
 }
 
 /// A *Response* sent by the *NBMC* in reply to a [`Request`] from a *Host*
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Format)]
 pub struct Response<'a> {
 	pub result: ResponseResult,
 	pub data: &'a [u8],
@@ -101,7 +103,7 @@ pub struct Response<'a> {
 
 /// Describes the [semantic version](https://semver.org) of this implementation
 /// of the NBMC interface.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Format)]
 pub struct ProtocolVersion {
 	major: u8,
 	minor: u8,
@@ -232,7 +234,7 @@ impl<'a> Receivable<'a> for Request {
 	/// let req = Request::from_bytes(&bytes).unwrap();
 	/// ```
 	fn from_bytes(data: &'a [u8]) -> Result<Request, Error> {
-		if data.len() != 4 {
+		if data.len() < 4 {
 			return Err(Error::BadLength);
 		}
 		let calc_crc = calculate_crc(&data[0..=3]);
@@ -267,7 +269,7 @@ impl TryFrom<u8> for ResponseResult {
 
 impl<'a> Response<'a> {
 	/// Make a new OK response, with some optional data
-	pub fn ok_with_data(data: &'a [u8]) -> Response<'a> {
+	pub fn new_ok_with_data(data: &'a [u8]) -> Response<'a> {
 		Response {
 			result: ResponseResult::Ok,
 			data,
@@ -281,7 +283,7 @@ impl<'a> Response<'a> {
 	}
 
 	/// Make a new error response
-	pub fn new(result: ResponseResult) -> Response<'a> {
+	pub fn new_without_data(result: ResponseResult) -> Response<'a> {
 		Response {
 			result,
 			data: &[],
@@ -299,15 +301,15 @@ impl<'a> Sendable for Response<'a> {
 	/// # use neotron_bmc_protocol::{Response, ResponseResult, Sendable};
 	/// let mut buffer = [0u8; 5];
 	///
-	/// let req = Response::ok_with_data(&[]);
+	/// let req = Response::new_ok_with_data(&[]);
 	/// assert_eq!(req.render_to_buffer(&mut buffer).unwrap(), 2);
 	/// assert_eq!(&buffer[0..=1], [0xA0, 0x69]);
 	///
-	/// let req = Response::ok_with_data(&[0x00, 0x01]);
+	/// let req = Response::new_ok_with_data(&[0x00, 0x01]);
 	/// assert_eq!(req.render_to_buffer(&mut buffer).unwrap(), 4);
 	/// assert_eq!(&buffer[0..=3], [0xA0, 0x00, 0x01, 0x4F]);
 	///
-	/// let req = Response::new(ResponseResult::BadRequestType);
+	/// let req = Response::new_without_data(ResponseResult::BadRequestType);
 	/// assert_eq!(req.render_to_buffer(&mut buffer).unwrap(), 2);
 	/// assert_eq!(&buffer[0..=1], [0xA2, 0x67]);
 	/// ```

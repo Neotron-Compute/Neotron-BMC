@@ -3,8 +3,6 @@
 //! Unlike the HAL, this implement 'SPI Peripheral Mode', i.e. for when the
 //! clock signal is an input and not an output.
 
-use core::convert::TryInto;
-
 use stm32f0xx_hal::{pac, prelude::*, rcc::Rcc};
 
 pub struct SpiPeripheral<const RXC: usize, const TXC: usize> {
@@ -143,31 +141,13 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		self.raw_write(0xFF);
 		// Get an IRQ when there's RX data available
 		self.enable_rxne_irq();
-		// self.disable_txe_irq();
 	}
 
 	/// Disable the SPI peripheral (i.e. when CS is high)
 	pub fn disable(&mut self) {
-		self.disable_txe_irq();
 		self.disable_rxne_irq();
 		self.dev.cr1.modify(|_r, w| {
 			w.spe().disabled();
-			w
-		});
-	}
-
-	/// Enable TX Empty interrupt
-	fn enable_txe_irq(&mut self) {
-		self.dev.cr2.modify(|_r, w| {
-			w.txeie().set_bit();
-			w
-		});
-	}
-
-	/// Disable TX Empty interrupt
-	fn disable_txe_irq(&mut self) {
-		self.dev.cr2.modify(|_r, w| {
-			w.txeie().clear_bit();
 			w
 		});
 	}
@@ -269,8 +249,25 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			*space = *inc;
 		}
 		self.tx_ready = data.len();
-		// Start the IRQ driven data transmission
-		// self.enable_txe_irq();
 		Ok(())
+	}
+
+	/// Render some message into the TX buffer.
+	///
+	/// You get an error if you try to load too much.
+	pub fn set_transmit_sendable(
+		&mut self,
+		message: &dyn neotron_bmc_protocol::Sendable,
+	) -> Result<(), ()> {
+		self.tx_ready = 0;
+		self.tx_idx = 0;
+
+		match message.render_to_buffer(&mut self.tx_buffer) {
+			Ok(n) => {
+				self.tx_ready = n;
+				Ok(())
+			}
+			Err(_) => Err(()),
+		}
 	}
 }
