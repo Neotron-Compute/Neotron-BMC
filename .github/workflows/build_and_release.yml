@@ -1,9 +1,9 @@
 on: [push, pull_request]
-name: Upload Release
+name: Build (and Release)
 
 jobs:
   build:
-    name: Build and release
+    name: Build (and Release)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,6 +18,9 @@ jobs:
 
       - name: Install flip-link
         run: cd / && cargo install --debug flip-link
+
+      - name: Build/Test neotron-bmc-protocol
+        run: cd neotron-bmc-protocol && cargo test
 
       - name: Build neotron-bmc-pico
         run: cd neotron-bmc-pico && DEFMT_LOG=info cargo build --release --verbose --target=thumbv6m-none-eabi
