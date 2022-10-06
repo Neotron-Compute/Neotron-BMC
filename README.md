@@ -65,7 +65,7 @@ below.
 | Address | Name                                  | Type  | Contains                                                 | Length   |
 | :-----: | ------------------------------------- | :---: | -------------------------------------------------------- | :------: |
 | 0x00    | Protocol Version                      | RO    | The NBMC protocol version, [1, 0, 0]                     | 3        |
-| 0x01    | Firmware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 64       |
+| 0x01    | Firmware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 32       |
 | 0x10    | Interrupt Status                      | R/W1C | Which interrupts are currently active, as a bitmask.     | 2        |
 | 0x11    | Interrupt Control                     | R/W   | Which interrupts are currently enabled, as a bitmask.    | 2        |
 | 0x20    | Button Status                         | RO    | The current state of the buttons                         | 1        |
