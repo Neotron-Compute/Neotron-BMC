@@ -34,158 +34,242 @@ See the [board-specific README](./neotron-bmc-nucleo/README.md)
 
 ## SPI Communications Protocol
 
-The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on rising edge) at 1 MHz (higher speeds TBD). It uses frames made up of 8-bit words.
+The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on
+rising edge) at 1 MHz (higher speeds TBD). It uses frames made up of 8-bit
+words.
 
-To communicate with the NBMC, the Host Processor must first take the Chip Select line (`SPI1_nCS`) low, then send a Header. SPI is a full-duplex system, but in this system only one side is actually transferring useful data at any time, so whilst the Header is being sent the Host will receive Padding Bytes of `0xFF` in return (which can be discarded).
+To communicate with the NBMC, the Host Processor must first take the Chip Select
+line (`SPI1_nCS`) low, then send a Header. SPI is a full-duplex system, but in
+this system only one side is actually transferring useful data at any time, so
+whilst the Header is being sent the Host will receive Padding Bytes of `0xFF` in
+return (which can be discarded).
 
 A transfer is comprised of three stages.
 
-1. The Request (Header, and optional Payload)
-2. The Processing Time
-3. The Response (Header, and optional Payload)
+1. `>` Request
+2. `-` Turn-Around
+3. `<` Reponse
 
-A Request Header contains the intructions from the Host for the NBMC. It specifies
-which direction the transfer is occurring (a read or a write), which register
-address is being access, and how many bytes are being transferred. It also
-include a checksum to ensure it has been received correctly.
+A *Request* is a sequence of bytes sent from the *Host* to the *NBMC*.
+*Turn-Around* is a period of time of interdeterminate length during which
+the *Host* clocks out dummy bytes and the *NBMC* responds with `0xFF` bytes,
+which indicate that it has not yet formulated the *Response*. This period ends,
+with the transmission of the *Response* from the *NBMC* to the *Host*. 
 
-If the Request Header contains a Write command, it is followed by the Request
-Payload. This comprises the N bytes indicated by the Request Header in the
-`length` field, plus an additional byte containing a CRC8 checksum. If the
-Request Header contains a Read command, there is no Request Payload.
+There are different kinds of *Request* that can be made. Each has a corresponding *Response*.
 
-After the Request comes a processing time of indeterminate length. Typically this will be under eight words in length, but it can vary in length according to other interrupts processed by the NBMC. During this time, the Host and the NBMC exchange padding bytes (0xFF).
+| Request Type       | Contains                        | Length       | Response Type |
+| ------------------ | ------------------------------- | ------------ | ------------- |
+| Read               | Type, Register#, Length, CRC    | 4            | Read          |
+| Short Write        | Type, Register#, Data Byte, CRC | 4            | Short         |
+| Long Write Start   | Type, Register#, Length, CRC    | 4            | Short         |
+| Long Write Payload | `Length` Bytes, CRC             | `Length` + 1 | Short         |
 
-When the NBMC is ready, it starts to send the Response Header. If the Request was a Read Request, the Response Header will be followed by the Response Payload. If it was a Write Request, there is no Response Payload.
+| Response Type | Contains                    | Length       |
+| ------------- | --------------------------- | ------------ |
+| Short         | Result, CRC                 | 2            |
+| Read          | Result, `Length` Bytes, CRC | `Length` + 2 |
 
-Once the Request and Response have been exchanged, the Host must raise the Chip Select line to indicate that the transfers are complete. Any further bytes from the Host are discarded as padding, and padding bytes are sent in reply.
+To allow the *NBMC* to be efficient at receiving data over SPI, it is important
+that the first *Request* received after the `nCS` pin goes active-low is of a
+fixed length. Here, all of the initial *Requests* have a fixed size of four
+bytes. A *Long Write Start Request* tells the *NBMC* to expect a *Request* of a
+different length to follow immediately after, which allows the *NBMC* to
+re-configure the DMA to expect the longer length *Request*. The *Long Write
+Payload* MUST only be sent following a *Long Write Start*, and without resetting
+the `nCS` signal in-between.
 
-A 'write' exchange looks like this:
+### Request Types
 
+* `0xC0`: Read
+* `0xC1`: Read (alternate)
+* `0xC2`: Short Write 
+* `0xC3`: Long Write
+
+### Response Results
+
+* `0xA0`: OK
+* `0xA1`: CRC Failure
+* `0xA2`: Bad Request Type
+* `0xA3`: Bad Register#
+* `0xA4`: Bad Length
+
+### Read Request / Response Sequence
+
+A *Read Request* consists of four 8-bit values:
+
+* A *Type* byte of either `0xC0` or `0xC1` marking this as a *Read Request*.
+* A *Register#*, indicating which register within the *NBMC* the *Host* wishes to read.
+* A Length, indicating how many bytes are to be read from the given *Register#*.
+* A *CRC*, which is the CRC-8 of the proceeding three bytes.
+
+The *Type* byte should alternate between `0xC0` and `0xC1` so that the *NBMC*
+can tell if the *Read Request* is a repeat of the previous request. This may
+occur, for example, if the *Read Response* fails its CRC check on arrival at the
+*Host*. Because a *Read Request* can have side-effects (like removing bytes from
+a FIFO), a repeated *Read Request* should return preceisely the same values as
+before, rather than, say, fetching more new bytes from the FIFO. This allows the
+FIFO to be read in a lossless fashion, even when there is occasional corruption
+on the SPI bus.
+
+A *Read Response* consists of a variable number of 8-bit values:
+
+* A *Response Result* code indicating whether the read operation was successful
+  or not.
+* A *Payload* consisting of the number of bytes requested in the *Read
+  Operation* (only present if the *Result* byte indicates Success)
+* A *CRC*, which is the CRC-8 of all the proceeding bytes.
+
+#### Example of Success
+
+```mermaid
+sequenceDiagram
+
+Host->>NBMC: ReadRequest(25, 5)
+Note over Host, NBMC: Read 5 bytes from Register 25
+
+NBMC->>NBMC: Reads from register
+
+NBMC->>Host: Response(OK, [0, 1, 2, 3, 4])
+
+Note over Host, NBMC: Host get the five bytes
 ```
- Host                       NBMC
-   |                         |
-   |---Request (4 + N + 1)-->| 1. The Request
-   |<--Padding (4 + N + 1)---|
-   |                         |
-   |-------Padding (n)------>| 2. Processing Time
-   |<------Padding (n)-------|
-   |                         |
-   |-------Padding (2)------>| 3. The Response
-   |<------Response (2)------|
+
+#### Example of Failure
+
+```mermaid
+sequenceDiagram
+
+Host->>NBMC: ReadRequest(25, 200)
+Note over Host, NBMC: Read 200 bytes from Register 25
+
+NBMC->>Host: Response(BadLength)
+
+Note over Host, NBMC: NBMC says no.
 ```
 
-A 'read' exchange looks like this:
+### Short Write Request / Response Sequence
 
+A *Short Write Request* consists of four 8-bit values:
+
+* A *Type* byte of `0xC2` marking this as a *Short Write Request*.
+* A *Register#*, indicating which register within the *NBMC* the *Host* wishes to write to.
+* A *Data Byte*, which is to be written to the given *Register#*.
+* A *CRC*, which is the CRC-8 of the proceeding three bytes.
+
+A *Short Response* is sent in returning, containing two bytes:
+
+* A [*Response Result*](#response-result-codes) code indicating whether the read
+  operation was successful or not.
+* A *CRC*, which is the CRC-8 of all the sole proceeding byte.
+
+You could equally consider a *Short Response* as a single 16-bit big-endian
+value, being one of `0xA069`, `0xA16E`, `0xA267`, `0xA360` or `0xA475`.
+
+#### Example of Success
+
+```mermaid
+sequenceDiagram
+
+Host->>NBMC: ShortWriteRequest(10, 0xAA)
+Note over Host, NBMC: Write 0xAA to Register 10
+
+NBMC->>NBMC: Writes to register
+
+NBMC->>Host: Response(OK)
+
+Note over Host, NBMC: NBMC is happy.
 ```
- Host                       NBMC
-   |                         |
-   |-------Request (4)------>| 1. The Request
-   |-------Padding (4)-------| 
-   |                         |
-   |-------Padding (n)------>| 2. Processing Time
-   |<------Padding (n)-------|
-   |                         |
-   |---Padding (2 + N + 1)-->| 3. The Response
-   |<--Request (2 + N + 1)---| 
-   |                         |
+
+### Long Write Request / Response Sequence
+
+A *Long Write Request* consists of four 8-bit values:
+
+* A *Type* byte of `0xC2` marking this as a *Short Write Request*.
+* A *Register#*, indicating which register within the *NBMC* the *Host* wishes to write to.
+* A *Length*, which is the number of payload bytes to follow in the subsequent *Long Write Payload*.
+* A *CRC*, which is the CRC-8 of the proceeding three bytes.
+
+A *Short Response* is sent, as per [Short Write
+Request](#short-write-request--response-sequence)
+
+If a *Short Response* is received containing a *Response Result* of **OK**
+(`0xA0`), the *NBMC* is ready to receive a *Long Write Payload*. If any other
+*Response Result* is received, the *Long Write Payload* must not be send and
+`nCS` must be raised to indicate the end of the transaction.
+
+A *Long Write Payload* consists of a variable number of 8-bit values:
+
+* A *Payload* consisting of the number of bytes requested in the *Long Write Request*
+* A *CRC*, which is the CRC-8 of all the proceeding bytes.
+
+This message must always contain exactly the number of bytes stated in the
+*Length* field of the *Long Write Request*, plus one additional CRC byte.
+
+A second *Short Response* is then sent, as per [Short Write
+Request](#short-write-request--response-sequence). The `nCS` signal must be
+raised at this point to restart the write sequence, regardless of the specific
+*Response Result* sent.
+
+#### Example of Success
+```mermaid
+sequenceDiagram
+
+Host->>NBMC: LongWriteRequest(16, 5)
+Note over Host, NBMC: Prepare to write 5 bytes to Register 16
+
+NBMC->>NBMC: Thinks for while
+
+NBMC->>Host: Response(OK)
+
+Note over Host, NBMC: NBMC is ready to take 5 bytes.
+
+Host->>NBMC: LongWritePayload([0, 1, 2, 3, 4])
+Note over Host, NBMC: Five bytes are sent
+
+NBMC->>NBMC: Checks CRC
+
+NBMC->>Host: Response(CrcFailure)
+
+Note over Host, NBMC: NBMC is sad. The five bytes must have been corrupted as their CRC didn't match.
 ```
 
-### Request
+### Cancelling
 
-A Request Header is comprised of 32 bits (or four bytes), and is described in the following table.
-
-| Byte | Bits | Meaning                   |
-| ---- | ---- | ------------------------- |
-| 0    | 7-0  | Command Byte              |
-| 1    | 7    | Counter Bit               |
-| 1    | 6-0  | Register Address (0..128) |
-| 2    | 7-0  | Transfer Length (0..255)  |
-| 3    | 7-0  | CRC of bytes above        |
-
-The Command Byte gives the direction: a read is 0x52 (ASCII `R`), whilst a write
-is 0x58 (ASCII `W`). It also helps us distinguish from a line tied high/low, or
-random noise. 
-
-The Counter Bit starts at 0 and alternates between 0 and 1 for each Request. If
-the NBMC sees a Request Header with the same counter as last time, it will serve
-up the same response as last time. This is particularly useful when reading from
-a FIFO, as when a corrupted transfer is retried you don't want to lose any bytes
-from the FIFO and so need to re-send the same ones again.
-
-Also note that a *Transfer Length* of 0 is interpreted as being 256 bytes, rather
-than zero bytes (because that wouldn't make any sense - you can't request to
-transfer nothing).
-
-The CRC is a [CRC-8](https://pycrc.org/models.html) (with Poly 0x07).
-
-Here are some example headers:
-
-* `52:85:21:E2` is a Read with Counter 1 from Register Address 0x05, length 33 bytes, CRC 0xE3.
-* `52:97:00:78` is a Read with Counter 1 from Register Address 0x17, length 256 bytes, CRC 0x78.
-* `58:7F:FF:E7` is a Write with Counter 0 from Register Address 0x7F, of length 255 bytes, CRC 0xE7.
-
-A Payload is simply the number of desired data bytes (as specified in the Header
-Packet), followed by a CRC8 of just the data payload. The meaning of these bytes
-will depend on the Register Address that was given in the Header.
-
-### Response
-
-A Response Header is comprised of 16 bits (or two bytes), and is described in the following table.
-
-| Byte | Bits | Meaning            |
-| ---- | ---- | ------------------ |
-| 0    | 7-0  | Response Byte      |
-| 1    | 7-0  | CRC of bytes above |
-
-
-The possible values of the 'Response Code' byte are:
-
-| Value | Meaning                  |
-| ----- | ------------------------ |
-| 0xA0  | Request OK               |
-| 0xA1  | Data underflow/overflow  |
-| 0xA2  | Unknown Register Address |
-| 0xA3  | Unsupported Length       |
-
-A Response Payload is only valid when *Request OK* (`0xA0`) is sent. Any other Response Code indicates that the Response Payload is garbage.
-
-Here are some examples:
-
-* `A0:69` - Request was processed OK.
-* `A1:6E` - Data underflow/overflow.
-* `A2:67` - Unknown Register Address.
-* `A3:60` - Unsupported Length (e.g. writing four bytes to a two byte register).
+Any *Request* can be cancelled by the *Host* lifting `nCS` high before the
+*Request* has finished sending. This allows the *NBMC* to accomodate unexpected
+*Host* reboots (as during a reboot it is expected that the `nCS` line will be
+raised).
 
 ## System Registers
 
-| Address | Name                                  | Type  | Contains                                                 | Length |
-| ------- | ------------------------------------- | ----- | -------------------------------------------------------- | ------ |
-| 0x00    | Firmware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 64     |
-| 0x01    | Interrupt Status                      | R/W1C | Which interrupts are currently active, as a bitmask.     | 2      |
-| 0x02    | Interrupt Control                     | R/W   | Which interrupts are currently enabled, as a bitmask.    | 2      |
-| 0x03    | Button Status                         | RO    | The current state of the buttons                         | 1      |
-| 0x04    | System Temperature                    | RO    | Temperature in °C, as an `i8`                            | 1      |
-| 0x05    | System Voltage (Standby 3.3V rail)    | RO    | Voltage in Volts/32, as a `u8`                           | 1      |
-| 0x06    | System Voltage (Main 3.3V rail)       | RO    | Voltage in Volts/32, as a `u8`                           | 1      |
-| 0x07    | System Voltage (5.0V rail)            | RO    | Voltage in Volts/32, as a `u8`                           | 1      |
-| 0x08    | Power Control                         | RW    | Enable/disable the power supply                          | 1      |
-| 0x10    | UART Receive/Transmit Buffer          | FIFO  | Data received/to be sent over the UART                   | max 64 |
-| 0x11    | UART FIFO Control                     | R/W   | Settings for the UART FIFO                               | 1      |
-| 0x12    | UART Control                          | R/W   | Settings for the UART                                    | 1      |
-| 0x13    | UART Status                           | R/W1C | The current state of the UART                            | 1      |
-| 0x14    | UART Baud Rate                        | R/W   | The UART baud rate in bps, as a `u32le`                  | 4      |
-| 0x20    | PS/2 Keyboard Receive/Transmit Buffer | FIFO  | Data received/to be sent over the PS/2 keyboard port     | max 16 |
-| 0x21    | PS/2 Keyboard Control                 | R/W   | Settings for the PS/2 Keyboard port                      | 1      |
-| 0x22    | PS/2 Keyboard Status                  | R/W1C | Current state of the PS/2 Keyboard port                  | 1      |
-| 0x30    | PS/2 Mouse Receive/Transmit Buffer    | FIFO  | Data received/to be sent over the PS/2 Mouse port        | max 16 |
-| 0x31    | PS/2 Mouse Control                    | R/W   | Settings for the PS/2 Mouse port                         | 1      |
-| 0x32    | PS/2 Mouse Status                     | R/W1C | Current state of the PS/2 Mouse port                     | 1      |
-| 0x40    | I²C Receive/Transmit Buffer           | FIFO  | Data received/to be sent over the I²C Bus                | max 16 |
-| 0x41    | I²C FIFO Control                      | R/W   | Settings for the I²C FIFO                                | 1      |
-| 0x42    | I²C Control                           | R/W   | Settings for the I²C Bus                                 | 1      |
-| 0x43    | I²C Status                            | R/W1C | Current state of the I²C Bus                             | 1      |
-| 0x44    | I²C Baud Rate                         | R/W   | The I²C clock rate in Hz, as a `u32le`                   | 4      |
+| Address | Name                                  | Type  | Contains                                                 | Length   |
+| ------- | ------------------------------------- | ----- | -------------------------------------------------------- | -------- |
+| 0x00    | Firmware Version                      | RO    | The NBMC firmware version, as a null-padded UTF-8 string | 64       |
+| 0x01    | Interrupt Status                      | R/W1C | Which interrupts are currently active, as a bitmask.     | 2        |
+| 0x02    | Interrupt Control                     | R/W   | Which interrupts are currently enabled, as a bitmask.    | 2        |
+| 0x03    | Button Status                         | RO    | The current state of the buttons                         | 1        |
+| 0x04    | System Temperature                    | RO    | Temperature in °C, as an `i8`                            | 1        |
+| 0x05    | System Voltage (Standby 3.3V rail)    | RO    | Voltage in Volts/32, as a `u8`                           | 1        |
+| 0x06    | System Voltage (Main 3.3V rail)       | RO    | Voltage in Volts/32, as a `u8`                           | 1        |
+| 0x07    | System Voltage (5.0V rail)            | RO    | Voltage in Volts/32, as a `u8`                           | 1        |
+| 0x08    | Power Control                         | RW    | Enable/disable the power supply                          | 1        |
+| 0x10    | UART Receive/Transmit Buffer          | FIFO  | Data received/to be sent over the UART                   | up to 64 |
+| 0x11    | UART FIFO Control                     | R/W   | Settings for the UART FIFO                               | 1        |
+| 0x12    | UART Control                          | R/W   | Settings for the UART                                    | 1        |
+| 0x13    | UART Status                           | R/W1C | The current state of the UART                            | 1        |
+| 0x14    | UART Baud Rate                        | R/W   | The UART baud rate in bps, as a `u32le`                  | 4        |
+| 0x20    | PS/2 Keyboard Receive/Transmit Buffer | FIFO  | Data received/to be sent over the PS/2 keyboard port     | up to 16 |
+| 0x21    | PS/2 Keyboard Control                 | R/W   | Settings for the PS/2 Keyboard port                      | 1        |
+| 0x22    | PS/2 Keyboard Status                  | R/W1C | Current state of the PS/2 Keyboard port                  | 1        |
+| 0x30    | PS/2 Mouse Receive/Transmit Buffer    | FIFO  | Data received/to be sent over the PS/2 Mouse port        | up to 16 |
+| 0x31    | PS/2 Mouse Control                    | R/W   | Settings for the PS/2 Mouse port                         | 1        |
+| 0x32    | PS/2 Mouse Status                     | R/W1C | Current state of the PS/2 Mouse port                     | 1        |
+| 0x40    | I²C Receive/Transmit Buffer           | FIFO  | Data received/to be sent over the I²C Bus                | up to 16 |
+| 0x41    | I²C FIFO Control                      | R/W   | Settings for the I²C FIFO                                | 1        |
+| 0x42    | I²C Control                           | R/W   | Settings for the I²C Bus                                 | 1        |
+| 0x43    | I²C Status                            | R/W1C | Current state of the I²C Bus                             | 1        |
+| 0x44    | I²C Baud Rate                         | R/W   | The I²C clock rate in Hz, as a `u32le`                   | 4        |
 
 The register types are:
 
