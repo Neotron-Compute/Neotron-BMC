@@ -455,5 +455,68 @@ pub fn calculate_crc(data: &[u8]) -> u8 {
 }
 
 // ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	#[test]
+	fn read_request() {
+		let req = Request::new_read(false, 0x10, 0x20);
+		let bytes = req.as_bytes();
+		assert_eq!(bytes, [0xC0, 0x10, 0x20, 0x3A]);
+		let decoded_req = Request::from_bytes(&bytes).unwrap();
+		assert_eq!(req, decoded_req);
+	}
+
+	#[test]
+	fn read_request_alt() {
+		let req = Request::new_read(true, 0x10, 0x20);
+		let bytes = req.as_bytes();
+		assert_eq!(bytes, [0xC1, 0x10, 0x20, 0x51]);
+		let decoded_req = Request::from_bytes(&bytes).unwrap();
+		assert_eq!(req, decoded_req);
+	}
+
+	#[test]
+	fn short_write_request() {
+		let req = Request::new_short_write(false, 0x11, 0x22);
+		let bytes = req.as_bytes();
+		assert_eq!(bytes, [0xC2, 0x11, 0x22, 0xF7]);
+		let decoded_req = Request::from_bytes(&bytes).unwrap();
+		assert_eq!(req, decoded_req);
+	}
+
+	#[test]
+	fn short_write_request_alt() {
+		let req = Request::new_short_write(true, 0x11, 0x22);
+		let bytes = req.as_bytes();
+		assert_eq!(bytes, [0xC3, 0x11, 0x22, 0x9C]);
+		let decoded_req = Request::from_bytes(&bytes).unwrap();
+		assert_eq!(req, decoded_req);
+	}
+
+	#[test]
+	fn long_write_request() {
+		let req = Request::new_long_write(false, 0x0F, 0x50);
+		let bytes = req.as_bytes();
+		assert_eq!(bytes, [0xC4, 0x0F, 0x50, 0x52]);
+		let decoded_req = Request::from_bytes(&bytes).unwrap();
+		assert_eq!(req, decoded_req);
+	}
+
+	#[test]
+	fn long_write_request_alt() {
+		let req = Request::new_long_write(true, 0x0F, 0x50);
+		let bytes = req.as_bytes();
+		assert_eq!(bytes, [0xC5, 0x0F, 0x50, 0x39]);
+		let decoded_req = Request::from_bytes(&bytes).unwrap();
+		assert_eq!(req, decoded_req);
+	}
+}
+
+// ============================================================================
 // End of File
 // ============================================================================
