@@ -61,6 +61,23 @@ mod app {
 	use super::*;
 	use systick_monotonic::*; // Implements the `Monotonic` trait
 
+	pub enum Message {
+		/// Word from PS/2 port 0
+		Ps2Data0(u16),
+		/// Word from PS/2 port 1
+		Ps2Data1(u16),
+		/// Message from SPI bus
+		SpiRequest(neotron_bmc_protocol::Request),
+		/// The power button was given a tap
+		PowerButtonShortPress,
+		/// The power button was held down
+		PowerButtonLongPress,
+		/// The reset button was given a tap
+		ResetButtonShortPress,
+		/// The UART got some data
+		UartByte(u8),
+	}
+
 	#[shared]
 	struct Shared {
 		/// The power LED (D1101)
@@ -112,9 +129,11 @@ mod app {
 		/// Our register state
 		#[lock_free]
 		register_state: RegisterState,
-		/// Keyboard words sink
+		/// Read messages here
 		#[lock_free]
-		kb_q_out: Consumer<'static, u16, 8>,
+		msg_q_out: Consumer<'static, Message, 8>,
+		/// Write messages here
+		msg_q_in: Producer<'static, Message, 8>,
 		/// SPI Peripheral
 		spi: neotron_bmc_pico::spi::SpiPeripheral<5, 64>,
 		/// CS pin
@@ -131,8 +150,6 @@ mod app {
 		press_button_reset_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Keyboard PS/2 decoder
 		kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder,
-		/// Keyboard words source
-		kb_q_in: Producer<'static, u16, 8>,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
@@ -144,7 +161,7 @@ mod app {
 	///
 	/// * Task `led_power_blink` - blinks the LED
 	/// * Task `button_poll` - checks the power and reset buttons
-	#[init(local = [ queue: Queue<u16, 8> = Queue::new()])]
+	#[init(local = [ queue: Queue<Message, 8> = Queue::new()])]
 	fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
 		defmt::info!("Neotron BMC version {:?} booting", VERSION);
 
@@ -285,7 +302,7 @@ mod app {
 
 		defmt::info!("Init complete!");
 
-		let (kb_q_in, kb_q_out) = ctx.local.queue.split();
+		let (msg_q_in, msg_q_out) = ctx.local.queue.split();
 
 		let shared_resources = Shared {
 			serial,
@@ -307,7 +324,8 @@ mod app {
 				firmware_version:
 					*b"Neotron BMC v0.3.1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
 			},
-			kb_q_out,
+			msg_q_out,
+			msg_q_in,
 			spi,
 			pin_cs,
 		};
@@ -316,7 +334,6 @@ mod app {
 			press_button_power_long: debouncr::debounce_16(false),
 			press_button_reset_short: debouncr::debounce_2(false),
 			kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder::new(),
-			kb_q_in,
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -325,45 +342,29 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [kb_q_out, spi, register_state])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, register_state])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		defmt::info!("Idle is running...");
 		loop {
-			if let Some(word) = ctx.shared.kb_q_out.dequeue() {
-				if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
-					defmt::info!("< KB 0x{:x}", byte);
-				} else {
-					defmt::warn!("< Bad KB 0x{:x}", word);
-				}
-			}
-
-			let mut req = None;
-			ctx.shared.spi.lock(|spi| {
-				let mut mark_done = false;
-				if let Some(data) = spi.get_received() {
-					use proto::Receivable;
-					match proto::Request::from_bytes(data) {
-						Ok(inner_req) => {
-							mark_done = true;
-							req = Some(inner_req);
-						}
-						Err(proto::Error::BadLength) => {
-							// Need more data
-						}
-						Err(e) => {
-							defmt::warn!("Bad Req ({:02x})", e as u8);
-							mark_done = true;
-						}
+			match ctx.shared.msg_q_out.dequeue() {
+				Some(Message::Ps2Data0(word)) => {
+					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
+						defmt::info!("< KB 0x{:x}", byte);
+					} else {
+						defmt::warn!("< Bad KB 0x{:x}", word);
 					}
 				}
-				if mark_done {
-					// Couldn't do this whilst holding the `data` ref.
-					spi.mark_done();
+				Some(Message::Ps2Data1(word)) => {
+					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
+						defmt::info!("< MS 0x{:x}", byte);
+					} else {
+						defmt::warn!("< Bad MS 0x{:x}", word);
+					}
 				}
-			});
-
-			match req {
-				Some(req) => match req.request_type {
+				Some(Message::PowerButtonLongPress) => {}
+				Some(Message::PowerButtonShortPress) => {}
+				Some(Message::ResetButtonShortPress) => {}
+				Some(Message::SpiRequest(req)) => match req.request_type {
 					proto::RequestType::Read | proto::RequestType::ReadAlt => {
 						let rsp = match req.register {
 							0x00 => {
@@ -393,9 +394,53 @@ mod app {
 						});
 					}
 				},
-				None => {}
+				Some(Message::UartByte(rx_byte)) => {
+					defmt::info!("UART RX {:?}", rx_byte);
+					// TODO: Copy byte to software buffer and turn UART RX
+					// interrupt off if buffer is full
+				}
+				None => {
+					// No messages
+				}
 			}
 
+			// Look for something in the SPI bytes received buffer:
+			let mut req = None;
+			ctx.shared.spi.lock(|spi| {
+				let mut mark_done = false;
+				if let Some(data) = spi.get_received() {
+					use proto::Receivable;
+					match proto::Request::from_bytes(data) {
+						Ok(inner_req) => {
+							mark_done = true;
+							req = Some(inner_req);
+						}
+						Err(proto::Error::BadLength) => {
+							// Need more data
+						}
+						Err(e) => {
+							defmt::warn!("Bad Req ({:02x})", e as u8);
+							mark_done = true;
+						}
+					}
+				}
+				if mark_done {
+					// Couldn't do this whilst holding the `data` ref.
+					spi.mark_done();
+				}
+			});
+
+			// If we got a valid message, queue it so we can look at it next time around
+			if let Some(req) = req {
+				if ctx
+					.shared
+					.msg_q_in
+					.lock(|q| q.enqueue(Message::SpiRequest(req)))
+					.is_err()
+				{
+					panic!("Q full!");
+				}
+			}
 			// TODO: Read ADC for 3.3V and 5.0V rails and check good
 		}
 	}
@@ -408,8 +453,8 @@ mod app {
 	#[task(
 		binds = EXTI4_15,
 		priority = 4,
-		shared = [ps2_clk0, ps2_dat0, exti, spi, pin_cs],
-		local = [kb_decoder, kb_q_in]
+		shared = [ps2_clk0, msg_q_in, ps2_dat0, exti, spi, pin_cs],
+		local = [kb_decoder]
 	)]
 	fn exti4_15_interrupt(mut ctx: exti4_15_interrupt::Context) {
 		let pr = ctx.shared.exti.pr.read();
@@ -419,7 +464,14 @@ mod app {
 			// Do we have a complete word?
 			if let Some(data) = ctx.local.kb_decoder.add_bit(data_bit) {
 				// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
-				ctx.local.kb_q_in.enqueue(data).unwrap();
+				if ctx
+					.shared
+					.msg_q_in
+					.lock(|q| q.enqueue(Message::Ps2Data0(data)))
+					.is_err()
+				{
+					panic!("queue full");
+				};
 			}
 			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
@@ -442,16 +494,17 @@ mod app {
 	///
 	/// It fires whenever there is new data received on USART1. We should flag to the host
 	/// that data is available.
-	#[task(binds = USART1, shared = [serial])]
-	fn usart1_interrupt(ctx: usart1_interrupt::Context) {
+	#[task(binds = USART1, shared = [serial, msg_q_in])]
+	fn usart1_interrupt(mut ctx: usart1_interrupt::Context) {
 		// Reading the register clears the RX-Not-Empty-Interrupt flag.
 		match ctx.shared.serial.read() {
 			Ok(b) => {
-				defmt::info!("<< UART {:x}", b);
+				let _ = ctx
+					.shared
+					.msg_q_in
+					.lock(|q| q.enqueue(Message::UartByte(b)));
 			}
-			Err(_) => {
-				defmt::warn!("<< UART None?");
-			}
+			_ => {}
 		}
 	}
 
