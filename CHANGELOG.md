@@ -2,7 +2,11 @@
 
 ## Unreleased Changes
 
-* None
+## v0.4.0
+
+* Add very basic SPI interface support to neotron-bmc-pico
+* No changes to neotron-bmc-nucleo (it's now out of date)
+* Added `neotron-bmc-protocol` crate at v0.1.0
 
 ## v0.3.1
 * Reset button triggers 250ms low pulse
