@@ -1,0 +1,32 @@
+[package]
+authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>", "Aïssata 'Ai' Maiga <aimaiga2@gmail.com>"]
+name = "neotron-bmc-nucleo"
+edition = "2018"
+version = "0.3.1"
+
+[dependencies]
+cortex-m = "0.7.1"
+cortex-m-rt = "0.7"
+defmt = "0.3.0"
+defmt-rtt = "0.3.0"
+cortex-m-rtic = "1.0"
+panic-probe = { version = "0.3.0", features = ["print-defmt"] }
+stm32f4xx-hal = { version = "0.11", features = ["stm32f401", "rt"] }
+debouncr = "0.2"
+heapless= "0.7"
+fugit = "0.3"
+
+[features]
+# set logging levels here
+default = [
+  "defmt-default",
+  # "dependency-a/defmt-trace",
+]
+
+# do NOT modify these features
+defmt-default = []
+defmt-trace = []
+defmt-debug = []
+defmt-info = []
+defmt-warn = []
+defmt-error = []

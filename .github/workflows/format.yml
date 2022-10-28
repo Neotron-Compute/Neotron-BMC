@@ -9,5 +9,9 @@ jobs:
     - uses: actions/checkout@v1
     - name: Add Tool
       run: rustup component add rustfmt
-    - name: Check Format
-      run: cargo fmt -- --check
+    - name: Check format neotron-bmc-pico
+      run: cd neotron-bmc-pico && cargo fmt -- --check
+    - name: Check format neotron-bmc-nucleo
+      run: cd neotron-bmc-nucleo && cargo fmt -- --check
+    - name: Check format neotron-bmc-protocol
+      run: cd neotron-bmc-protocol && cargo fmt -- --check
