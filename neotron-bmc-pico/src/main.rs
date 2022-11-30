@@ -23,6 +23,7 @@ use stm32f0xx_hal::{
 	serial,
 };
 
+use neotron_bmc_commands::Command;
 use neotron_bmc_pico as _;
 use neotron_bmc_protocol as proto;
 
@@ -126,9 +127,6 @@ mod app {
 		/// The external interrupt peripheral
 		#[lock_free]
 		exti: pac::EXTI,
-		/// Our register state
-		#[lock_free]
-		register_state: RegisterState,
 		/// Read messages here
 		#[lock_free]
 		msg_q_out: Consumer<'static, Message, 8>,
@@ -320,10 +318,6 @@ mod app {
 			ps2_dat0,
 			_ps2_dat1,
 			exti: dp.EXTI,
-			register_state: RegisterState {
-				firmware_version:
-					*b"Neotron BMC v0.3.1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
-			},
 			msg_q_out,
 			msg_q_in,
 			spi,
@@ -342,14 +336,21 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, register_state])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi])]
 	fn idle(mut ctx: idle::Context) -> ! {
+		let mut register_state = RegisterState {
+			firmware_version:
+				*b"Neotron BMC v0.3.1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+		};
+
 		defmt::info!("Idle is running...");
 		loop {
 			match ctx.shared.msg_q_out.dequeue() {
 				Some(Message::Ps2Data0(word)) => {
 					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
 						defmt::info!("< KB 0x{:x}", byte);
+					// TODO: Copy byte to software buffer and turn PS/2 bus off
+					// if buffer is full
 					} else {
 						defmt::warn!("< Bad KB 0x{:x}", word);
 					}
@@ -366,24 +367,10 @@ mod app {
 				Some(Message::ResetButtonShortPress) => {}
 				Some(Message::SpiRequest(req)) => match req.request_type {
 					proto::RequestType::Read | proto::RequestType::ReadAlt => {
-						let rsp = match req.register {
-							0x00 => {
-								let length = req.length_or_data as usize;
-								if length > ctx.shared.register_state.firmware_version.len() {
-									proto::Response::new_without_data(
-										proto::ResponseResult::BadLength,
-									)
-								} else {
-									let bytes = &ctx.shared.register_state.firmware_version;
-									proto::Response::new_ok_with_data(&bytes[0..length])
-								}
-							}
-							_ => proto::Response::new_without_data(
-								proto::ResponseResult::BadRegister,
-							),
-						};
-						ctx.shared.spi.lock(|spi| {
-							spi.set_transmit_sendable(&rsp).unwrap();
+						process_command(req, &mut register_state, |rsp| {
+							ctx.shared.spi.lock(|spi| {
+								spi.set_transmit_sendable(rsp).unwrap();
+							});
 						});
 					}
 					_ => {
@@ -631,6 +618,34 @@ mod app {
 			ctx.shared.pin_sys_reset.set_high().unwrap();
 		}
 	}
+}
+
+/// Process an incoming command, converting a request into a response.
+fn process_command<F>(req: proto::Request, register_state: &mut RegisterState, rsp_handler: F)
+where
+	F: FnOnce(&proto::Response),
+{
+	let rsp = match Command::parse(req.register) {
+		Some(Command::ProtocolVersion) => {
+			let length = req.length_or_data as usize;
+			if length != 3 {
+				proto::Response::new_without_data(proto::ResponseResult::BadLength)
+			} else {
+				proto::Response::new_ok_with_data(&[0, 1, 1])
+			}
+		}
+		Some(Command::FirmwareVersion) => {
+			let length = req.length_or_data as usize;
+			if length > register_state.firmware_version.len() {
+				proto::Response::new_without_data(proto::ResponseResult::BadLength)
+			} else {
+				let bytes = &register_state.firmware_version;
+				proto::Response::new_ok_with_data(&bytes[0..length])
+			}
+		}
+		_ => proto::Response::new_without_data(proto::ResponseResult::BadRegister),
+	};
+	rsp_handler(&rsp);
 }
 
 // TODO: Pins we haven't used yet
