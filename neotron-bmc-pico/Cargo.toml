@@ -9,7 +9,7 @@ cortex-m = { version = "0.7.5", features = ["inline-asm", "critical-section-sing
 cortex-m-rtic = "1.0"
 debouncr = "0.2"
 defmt = "0.3"
-defmt-rtt = "0.3"
+defmt-rtt = "0.4"
 heapless= "0.7"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 stm32f0xx-hal = { version = "0.18", features = ["stm32f030x6", "rt"] }
