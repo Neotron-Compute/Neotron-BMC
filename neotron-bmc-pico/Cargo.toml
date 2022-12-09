@@ -5,7 +5,7 @@ edition = "2018"
 version = "0.4.0"
 
 [dependencies]
-cortex-m = { version = "0.7.5", features = ["inline-asm"] }
+cortex-m = { version = "0.7.5", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rtic = "1.0"
 debouncr = "0.2"
 defmt = "0.3"
