@@ -52,9 +52,18 @@ pub enum DcPowerState {
 }
 
 /// This is our system state, as accessible via SPI reads and writes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RegisterState {
+	/// The version of this firmware
 	firmware_version: [u8; 32],
+	/// Bytes we've read from the keyboard, ready for sending to the host
+	ps2_kb_bytes: heapless::Deque<u8, 16>,
+	/// Used for holding our TX buffer, so we can re-send if required
+	scratch: [u8; 16],
+	/// A copy of the last request, so we can spot duplicates and re-send
+	/// without re-doing a FIFO read. This happens if our response gets a CRC
+	/// error.
+	last_req: Option<proto::Request>,
 }
 
 #[app(device = crate::pac, peripherals = true, dispatchers = [USB, USART3_4_5_6, TIM14, TIM15, TIM16, TIM17, PVD])]
@@ -339,8 +348,8 @@ mod app {
 	#[idle(shared = [msg_q_out, msg_q_in, spi])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		let mut register_state = RegisterState {
-			firmware_version:
-				*b"Neotron BMC v0.3.1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+			firmware_version: *b"Neotron BMC v0.4.1-alpha\x00\x00\x00\x00\x00\x00\x00\x00",
+			..Default::default()
 		};
 
 		defmt::info!("Idle is running...");
@@ -349,8 +358,9 @@ mod app {
 				Some(Message::Ps2Data0(word)) => {
 					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
 						defmt::info!("< KB 0x{:x}", byte);
-					// TODO: Copy byte to software buffer and turn PS/2 bus off
-					// if buffer is full
+						if let Err(_x) = register_state.ps2_kb_bytes.push_back(byte) {
+							defmt::warn!("KB overflow!");
+						}
 					} else {
 						defmt::warn!("< Bad KB 0x{:x}", word);
 					}
@@ -362,25 +372,22 @@ mod app {
 						defmt::warn!("< Bad MS 0x{:x}", word);
 					}
 				}
-				Some(Message::PowerButtonLongPress) => {}
-				Some(Message::PowerButtonShortPress) => {}
-				Some(Message::ResetButtonShortPress) => {}
-				Some(Message::SpiRequest(req)) => match req.request_type {
-					proto::RequestType::Read | proto::RequestType::ReadAlt => {
-						process_command(req, &mut register_state, |rsp| {
-							ctx.shared.spi.lock(|spi| {
-								spi.set_transmit_sendable(rsp).unwrap();
-							});
-						});
-					}
-					_ => {
-						let rsp =
-							proto::Response::new_without_data(proto::ResponseResult::BadLength);
+				Some(Message::PowerButtonLongPress) => {
+					// TODO: Move button handling out of ISR
+				}
+				Some(Message::PowerButtonShortPress) => {
+					// TODO: Move button handling out of ISR
+				}
+				Some(Message::ResetButtonShortPress) => {
+					// TODO: Move button handling out of ISR
+				}
+				Some(Message::SpiRequest(req)) => {
+					process_command(req, &mut register_state, |rsp| {
 						ctx.shared.spi.lock(|spi| {
-							spi.set_transmit_sendable(&rsp).unwrap();
+							spi.set_transmit_sendable(rsp).unwrap();
 						});
-					}
-				},
+					});
+				}
 				Some(Message::UartByte(rx_byte)) => {
 					defmt::info!("UART RX {:?}", rx_byte);
 					// TODO: Copy byte to software buffer and turn UART RX
@@ -625,26 +632,75 @@ fn process_command<F>(req: proto::Request, register_state: &mut RegisterState, r
 where
 	F: FnOnce(&proto::Response),
 {
-	let rsp = match Command::parse(req.register) {
-		Some(Command::ProtocolVersion) => {
+	if register_state.last_req.as_ref() == Some(&req) {
+		// A duplicate! Resend what we sent last time (so we don't affect FIFOs with a duplicate read).
+		let length = req.length_or_data as usize;
+		let rsp = proto::Response::new_ok_with_data(&register_state.scratch[0..length]);
+		defmt::warn!("Retry");
+		rsp_handler(&rsp);
+		return;
+	}
+
+	// We were not sent what we were sent last time, so forget the previous request.
+	register_state.last_req = None;
+
+	// What do they want?
+	let rsp = match (req.request_type, Command::parse(req.register)) {
+		(proto::RequestType::Read, Some(Command::ProtocolVersion))
+		| (proto::RequestType::ReadAlt, Some(Command::ProtocolVersion)) => {
+			defmt::debug!("Reading ProtocolVersion");
+			// They want the Protocol Version we support. Give them v0.1.1.
 			let length = req.length_or_data as usize;
-			if length != 3 {
-				proto::Response::new_without_data(proto::ResponseResult::BadLength)
-			} else {
+			if length == 3 {
+				// No need to cache
 				proto::Response::new_ok_with_data(&[0, 1, 1])
-			}
-		}
-		Some(Command::FirmwareVersion) => {
-			let length = req.length_or_data as usize;
-			if length > register_state.firmware_version.len() {
-				proto::Response::new_without_data(proto::ResponseResult::BadLength)
 			} else {
-				let bytes = &register_state.firmware_version;
-				proto::Response::new_ok_with_data(&bytes[0..length])
+				proto::Response::new_without_data(proto::ResponseResult::BadLength)
 			}
 		}
-		_ => proto::Response::new_without_data(proto::ResponseResult::BadRegister),
+		(proto::RequestType::Read, Some(Command::FirmwareVersion))
+		| (proto::RequestType::ReadAlt, Some(Command::FirmwareVersion)) => {
+			defmt::debug!("Reading FirmwareVersion");
+			// They want the Firmware Version string.
+			let length = req.length_or_data as usize;
+			if length <= register_state.firmware_version.len() {
+				let bytes = &register_state.firmware_version;
+				// No need to cache
+				proto::Response::new_ok_with_data(&bytes[0..length])
+			} else {
+				proto::Response::new_without_data(proto::ResponseResult::BadLength)
+			}
+		}
+		(proto::RequestType::Read, Some(Command::Ps2KbBuffer))
+		| (proto::RequestType::ReadAlt, Some(Command::Ps2KbBuffer)) => {
+			defmt::debug!("Reading Ps2KbBuffer");
+			let length = req.length_or_data as usize;
+			if length > 0 && length <= register_state.scratch.len() {
+				// First byte is the # bytes in the FIFO
+				register_state.scratch[0] = register_state.ps2_kb_bytes.len() as u8;
+				// Then as many of those FIFO bytes as fit
+				for slot in &mut register_state.scratch[1..] {
+					if let Some(x) = register_state.ps2_kb_bytes.pop_front() {
+						*slot = x;
+					} else {
+						*slot = 0;
+					}
+				}
+				// OK, cache this one because FIFO reads are damaing.
+				register_state.last_req = Some(req);
+				// Send the response
+				proto::Response::new_ok_with_data(&register_state.scratch[0..length])
+			} else {
+				// Can't help you - you want a weird number of bytes
+				proto::Response::new_without_data(proto::ResponseResult::BadLength)
+			}
+		}
+		_ => {
+			// Sorry, that register / request type is not supported
+			proto::Response::new_without_data(proto::ResponseResult::BadRegister)
+		}
 	};
+	defmt::debug!("Sending {:?}", rsp);
 	rsp_handler(&rsp);
 }
 
