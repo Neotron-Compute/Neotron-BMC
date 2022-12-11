@@ -4,7 +4,7 @@
 
 #![no_std]
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
 #[repr(u8)]
 pub enum Command {
 	/// # Protocol Version
@@ -137,38 +137,4 @@ pub enum Command {
 	/// * Length: 4
 	/// * Mode: R/W
 	I2cBaudRate = 0x64,
-}
-
-impl Command {
-	pub fn parse(byte: u8) -> Option<Command> {
-		match byte {
-			0x00 => Some(Command::ProtocolVersion),
-			0x01 => Some(Command::FirmwareVersion),
-			0x10 => Some(Command::InterruptStatus),
-			0x11 => Some(Command::InterruptControl),
-			0x20 => Some(Command::ButtonStatus),
-			0x21 => Some(Command::SystemTemperature),
-			0x22 => Some(Command::SystemVoltage33S),
-			0x23 => Some(Command::SystemVoltage33),
-			0x24 => Some(Command::SystemVoltage55),
-			0x25 => Some(Command::PowerControl),
-			0x30 => Some(Command::UartBuffer),
-			0x31 => Some(Command::UartFifoControl),
-			0x32 => Some(Command::UartControl),
-			0x33 => Some(Command::UartStatus),
-			0x34 => Some(Command::UartBaudRate),
-			0x40 => Some(Command::Ps2KbBuffer),
-			0x41 => Some(Command::Ps2KbControl),
-			0x42 => Some(Command::Ps2KbStatus),
-			0x50 => Some(Command::Ps2MouseBuffer),
-			0x51 => Some(Command::Ps2MouseControl),
-			0x52 => Some(Command::Ps2MouseStatus),
-			0x60 => Some(Command::I2cBuffer),
-			0x61 => Some(Command::I2cFifoControl),
-			0x62 => Some(Command::I2cControl),
-			0x63 => Some(Command::I2cStatus),
-			0x64 => Some(Command::I2cBaudRate),
-			_ => None,
-		}
-	}
 }

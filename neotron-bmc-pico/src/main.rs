@@ -11,6 +11,8 @@
 #![no_main]
 #![no_std]
 
+use core::convert::TryFrom;
+
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
@@ -347,6 +349,7 @@ mod app {
 	/// This task is called when there is nothing else to do.
 	#[idle(shared = [msg_q_out, msg_q_in, spi])]
 	fn idle(mut ctx: idle::Context) -> ! {
+		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
 			firmware_version: *b"Neotron BMC v0.4.1-alpha\x00\x00\x00\x00\x00\x00\x00\x00",
 			..Default::default()
@@ -645,9 +648,9 @@ where
 	register_state.last_req = None;
 
 	// What do they want?
-	let rsp = match (req.request_type, Command::parse(req.register)) {
-		(proto::RequestType::Read, Some(Command::ProtocolVersion))
-		| (proto::RequestType::ReadAlt, Some(Command::ProtocolVersion)) => {
+	let rsp = match (req.request_type, Command::try_from(req.register)) {
+		(proto::RequestType::Read, Ok(Command::ProtocolVersion))
+		| (proto::RequestType::ReadAlt, Ok(Command::ProtocolVersion)) => {
 			defmt::debug!("Reading ProtocolVersion");
 			// They want the Protocol Version we support. Give them v0.1.1.
 			let length = req.length_or_data as usize;
@@ -658,8 +661,8 @@ where
 				proto::Response::new_without_data(proto::ResponseResult::BadLength)
 			}
 		}
-		(proto::RequestType::Read, Some(Command::FirmwareVersion))
-		| (proto::RequestType::ReadAlt, Some(Command::FirmwareVersion)) => {
+		(proto::RequestType::Read, Ok(Command::FirmwareVersion))
+		| (proto::RequestType::ReadAlt, Ok(Command::FirmwareVersion)) => {
 			defmt::debug!("Reading FirmwareVersion");
 			// They want the Firmware Version string.
 			let length = req.length_or_data as usize;
@@ -671,8 +674,8 @@ where
 				proto::Response::new_without_data(proto::ResponseResult::BadLength)
 			}
 		}
-		(proto::RequestType::Read, Some(Command::Ps2KbBuffer))
-		| (proto::RequestType::ReadAlt, Some(Command::Ps2KbBuffer)) => {
+		(proto::RequestType::Read, Ok(Command::Ps2KbBuffer))
+		| (proto::RequestType::ReadAlt, Ok(Command::Ps2KbBuffer)) => {
 			defmt::debug!("Reading Ps2KbBuffer");
 			let length = req.length_or_data as usize;
 			if length > 0 && length <= register_state.scratch.len() {
