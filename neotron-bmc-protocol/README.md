@@ -136,7 +136,7 @@ Note over Host, NBMC: NBMC says no.
 
 A *Short Write Request* consists of four 8-bit values:
 
-* A *Type* byte of `0xC2` marking this as a *Short Write Request*.
+* A *Type* byte of `0xC2` or `0xC3` marking this as a *Short Write Request*.
 * A *Register#*, indicating which register within the *NBMC* the *Host* wishes to write to.
 * A *Data Byte*, which is to be written to the given *Register#*.
 * A *CRC*, which is the CRC-8 of the proceeding three bytes.
@@ -169,7 +169,7 @@ Note over Host, NBMC: NBMC is happy.
 
 A *Long Write Request* consists of four 8-bit values:
 
-* A *Type* byte of `0xC2` marking this as a *Short Write Request*.
+* A *Type* byte of `0xC4` or `0xC5` marking this as a *Long Write Request*.
 * A *Register#*, indicating which register within the *NBMC* the *Host* wishes to write to.
 * A *Length*, which is the number of payload bytes to follow in the subsequent *Long Write Payload*.
 * A *CRC*, which is the CRC-8 of the proceeding three bytes.
@@ -179,7 +179,7 @@ Request](#short-write-request--response-sequence)
 
 If a *Short Response* is received containing a *Response Result* of **OK**
 (`0xA0`), the *NBMC* is ready to receive a *Long Write Payload*. If any other
-*Response Result* is received, the *Long Write Payload* must not be send and
+*Response Result* is received, the *Long Write Payload* must not be sent and
 `nCS` must be raised to indicate the end of the transaction.
 
 A *Long Write Payload* consists of a variable number of 8-bit values:
@@ -213,9 +213,32 @@ Note over Host, NBMC: Five bytes are sent
 
 NBMC->>NBMC: Checks CRC
 
+NBMC->>Host: Response(OK)
+
+Note over Host, NBMC: NBMC is happy.
+```
+
+#### Example of Failure
+```mermaid
+sequenceDiagram
+
+Host->>NBMC: LongWriteRequest(16, 5)
+Note over Host, NBMC: Prepare to write 5 bytes to Register 16
+
+NBMC->>NBMC: Thinks for while
+
+NBMC->>Host: Response(OK)
+
+Note over Host, NBMC: NBMC is ready to take 5 bytes.
+
+Host->>NBMC: LongWritePayload([0, 1, 2, 3, 4])
+Note over Host, NBMC: Five bytes are sent
+
+NBMC->>NBMC: Checks CRC
+
 NBMC->>Host: Response(CrcFailure)
 
-Note over Host, NBMC: NBMC is sad. The five bytes<br/>must have been corrupted as their CRC didn't match.
+Note over Host, NBMC: NBMC is sad. The five bytes<br/>must have been corrupted as their CRC didn't<br/>match. Host must raise `nCS` and try again.
 ```
 
 ### Cancelling
@@ -234,8 +257,3 @@ This code is licenced under the Blue Oak Model License 1.0.0. See:
 
 Our intent behind picking this licence is to allow this code to be freely
 reused, both in open-source and commercially licensed products.
-
-Note that this firmware image incorporates a number of third-party modules. You
-should review the output of `cargo tree` and ensure that any licence terms for
-those modules are upheld. You should also be aware that this application was
-based on the Knurling Template at https://github.com/knurling-rs/app-template.
