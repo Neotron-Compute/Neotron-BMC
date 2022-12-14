@@ -149,6 +149,8 @@ mod app {
 		pin_cs: PA4<Input<PullDown>>,
 		/// Keyboard PS/2 decoder
 		kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder,
+		/// Run-time Clock Control device
+		rcc: stm32f0xx_hal::rcc::Rcc,
 	}
 
 	#[local]
@@ -178,6 +180,7 @@ mod app {
 		let cp: cortex_m::Peripherals = ctx.core;
 
 		let mut flash = dp.FLASH;
+
 		let mut rcc = dp
 			.RCC
 			.configure()
@@ -185,6 +188,13 @@ mod app {
 			.pclk(48.mhz())
 			.sysclk(48.mhz())
 			.freeze(&mut flash);
+
+		// PLL Source is HSI (8 MHz)
+		// PLL_MUL = 12 (calculated by the `freeze` function)
+		// PLL_CLK = (PLL_SRC / 2) * PLL_MUL = 48 MHz
+		// SYSCLK = PLL_CLK = 48 MHz
+		// HCLK (AHB_CLK) = SYSCLK / AHB_PRESCALER (1) = 48 MHz
+		// PCLK (APB_CLK) = HCLK (AHB_CLK) / APB_PRESCALER (1) = 48 MHz
 
 		defmt::info!("Configuring SysTick...");
 		// Initialize the monotonic timer using the Cortex-M SysTick peripheral
@@ -281,7 +291,7 @@ mod app {
 		let spi = neotron_bmc_pico::spi::SpiPeripheral::new(
 			dp.SPI1,
 			(pin_sck, pin_cipo, pin_copi),
-			2_000_000,
+			2_000_000u32.hz(),
 			&mut rcc,
 		);
 
@@ -334,6 +344,7 @@ mod app {
 			spi,
 			pin_cs,
 			kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder::new(),
+			rcc,
 		};
 		let local_resources = Local {
 			press_button_power_short: debouncr::debounce_2(false),
@@ -347,7 +358,7 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, pin_cs])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, pin_cs, rcc])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
@@ -440,6 +451,7 @@ mod app {
 
 			// Look for something in the SPI bytes received buffer:
 			let mut req = None;
+			let mut mark_bad = false;
 			ctx.shared.spi.lock(|spi| {
 				let mut mark_done = false;
 				if let Some(data) = spi.get_received() {
@@ -455,6 +467,7 @@ mod app {
 						Err(e) => {
 							defmt::warn!("Bad Req {:?} ({=[u8]:x}", e, data);
 							mark_done = true;
+							mark_bad = true;
 						}
 					}
 				}
@@ -463,6 +476,12 @@ mod app {
 					spi.mark_done();
 				}
 			});
+
+			if mark_bad {
+				ctx.shared.rcc.lock(|r| neotron_bmc_pico::reset_spi1(r));
+				ctx.shared.spi.lock(|r| r.configure());
+				defmt::warn!("Reset SPI1");
+			}
 
 			// If we got a valid message, queue it so we can look at it next time around
 			if let Some(req) = req {
@@ -514,9 +533,11 @@ mod app {
 			if ctx.shared.pin_cs.lock(|pin| pin.is_low().unwrap()) {
 				// If incoming Chip Select is low, turn on the SPI engine
 				ctx.shared.spi.lock(|s| s.start());
+				defmt::warn!("on");
 			} else {
 				// If incoming Chip Select is high, turn off the SPI engine
 				ctx.shared.spi.lock(|s| s.stop());
+				defmt::warn!("off");
 			}
 			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr4().set_bit());

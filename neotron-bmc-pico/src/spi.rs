@@ -3,7 +3,7 @@
 //! Unlike the HAL, this implement 'SPI Peripheral Mode', i.e. for when the
 //! clock signal is an input and not an output.
 
-use stm32f0xx_hal::{pac, prelude::*, rcc::Rcc};
+use stm32f0xx_hal::{pac, rcc::Rcc};
 
 pub struct SpiPeripheral<const RXC: usize, const TXC: usize> {
 	dev: pac::SPI1,
@@ -24,10 +24,12 @@ pub struct SpiPeripheral<const RXC: usize, const TXC: usize> {
 }
 
 impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
+	const MODE: embedded_hal::spi::Mode = embedded_hal::spi::MODE_0;
+
 	pub fn new<SCKPIN, MISOPIN, MOSIPIN>(
 		dev: pac::SPI1,
 		pins: (SCKPIN, MISOPIN, MOSIPIN),
-		speed_hz: u32,
+		speed_hz: stm32f0xx_hal::time::Hertz,
 		rcc: &mut Rcc,
 	) -> SpiPeripheral<RXC, TXC>
 	where
@@ -38,36 +40,51 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		defmt::info!(
 			"pclk = {}, incoming spi_clock = {}",
 			rcc.clocks.pclk().0,
-			speed_hz
+			speed_hz.0
 		);
-
-		let mode = embedded_hal::spi::MODE_0;
 
 		// Set SPI up in Controller mode. This will cause the HAL to enable the clocks and power to the IP block.
 		// It also checks the pins are OK.
-		let spi_controller = stm32f0xx_hal::spi::Spi::spi1(dev, pins, mode, 8_000_000u32.hz(), rcc);
+		let spi_controller = stm32f0xx_hal::spi::Spi::spi1(dev, pins, Self::MODE, speed_hz, rcc);
 		// Now disassemble the driver so we can set it into Controller mode instead
 		let (dev, _pins) = spi_controller.release();
 
+		let mut spi = SpiPeripheral {
+			dev,
+			rx_buffer: [0u8; RXC],
+			rx_idx: 0,
+			tx_buffer: [0u8; TXC],
+			tx_idx: 0,
+			tx_ready: 0,
+			is_done: false,
+			enabled: false,
+		};
+
+		spi.configure();
+
+		spi
+	}
+
+	pub fn configure(&mut self) {
 		// We are following DM00043574, Section 30.5.1 Configuration of SPI
 
 		// 1. Disable SPI
-		dev.cr1.modify(|_r, w| {
+		self.dev.cr1.modify(|_r, w| {
 			w.spe().disabled();
 			w
 		});
 
 		// 2. Write to the SPI_CR1 register. Apologies for the outdated terminology.
-		dev.cr1.write(|w| {
+		self.dev.cr1.write(|w| {
 			// 2a. Configure the serial clock baud rate (ignored in peripheral mode)
 			w.br().div2();
 			// 2b. Configure the CPHA and CPOL bits.
-			if mode.phase == embedded_hal::spi::Phase::CaptureOnSecondTransition {
+			if Self::MODE.phase == embedded_hal::spi::Phase::CaptureOnSecondTransition {
 				w.cpha().second_edge();
 			} else {
 				w.cpha().first_edge();
 			}
-			if mode.polarity == embedded_hal::spi::Polarity::IdleHigh {
+			if Self::MODE.polarity == embedded_hal::spi::Polarity::IdleHigh {
 				w.cpol().idle_high();
 			} else {
 				w.cpol().idle_low();
@@ -89,7 +106,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		});
 
 		// 3. Write to SPI_CR2 register
-		dev.cr2.write(|w| {
+		self.dev.cr2.write(|w| {
 			// 3a. Configure the DS[3:0] bits to select the data length for the transfer.
 			unsafe { w.ds().bits(0b111) };
 			// 3b. Disable hard-output on the CS pin
@@ -109,24 +126,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		// 4. SPI_CRCPR - not required
 
 		// 5. DMA registers - not required
-
-		let mut spi = SpiPeripheral {
-			dev,
-			rx_buffer: [0u8; RXC],
-			rx_idx: 0,
-			tx_buffer: [0u8; TXC],
-			tx_idx: 0,
-			tx_ready: 0,
-			is_done: false,
-			enabled: false,
-		};
-
-		// Empty the receive register
-		while spi.has_rx_data() {
-			let _ = spi.raw_read();
-		}
-
-		spi
 	}
 
 	/// Allow the [`Self::start`] and [`Self::stop`] functions to actually work.
@@ -150,10 +149,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		self.tx_idx = 0;
 		self.tx_ready = 0;
 		self.is_done = false;
-		// Empty the receive register
-		while self.has_rx_data() {
-			let _ = self.raw_read();
-		}
 		self.dev.cr1.modify(|_r, w| {
 			w.spe().enabled();
 			w
@@ -190,10 +185,10 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		});
 	}
 
-	/// Does the RX FIFO have any data in it?
-	fn has_rx_data(&self) -> bool {
-		self.dev.sr.read().rxne().is_not_empty()
-	}
+	// /// Does the RX FIFO have any data in it?
+	// fn has_rx_data(&self) -> bool {
+	// 	self.dev.sr.read().rxne().is_not_empty()
+	// }
 
 	fn raw_read(&mut self) -> u8 {
 		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
