@@ -2,3 +2,6 @@
 target/
 *Cargo.lock*
 */Cargo.lock
+datasheets/*.pdf
+**/.DS_Store
+
