@@ -366,6 +366,7 @@ mod app {
 			..Default::default()
 		};
 
+		let mut spi_desynced = false;
 		defmt::info!("Idle is running...");
 		loop {
 			match ctx.shared.msg_q_out.dequeue() {
@@ -451,7 +452,6 @@ mod app {
 
 			// Look for something in the SPI bytes received buffer:
 			let mut req = None;
-			let mut mark_bad = false;
 			ctx.shared.spi.lock(|spi| {
 				let mut mark_done = false;
 				if let Some(data) = spi.get_received() {
@@ -467,7 +467,7 @@ mod app {
 						Err(e) => {
 							defmt::warn!("Bad Req {:?} ({=[u8]:x}", e, data);
 							mark_done = true;
-							mark_bad = true;
+							spi_desynced = true;
 						}
 					}
 				}
@@ -477,7 +477,8 @@ mod app {
 				}
 			});
 
-			if mark_bad {
+			if spi_desynced && ctx.shared.pin_cs.lock(|pin| pin.is_high().unwrap()) {
+				spi_desynced = false;
 				ctx.shared.rcc.lock(|r| neotron_bmc_pico::reset_spi1(r));
 				ctx.shared.spi.lock(|r| r.configure());
 				defmt::warn!("Reset SPI1");
