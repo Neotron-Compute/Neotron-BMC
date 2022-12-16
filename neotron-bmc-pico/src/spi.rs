@@ -19,6 +19,8 @@ pub struct SpiPeripheral<const RXC: usize, const TXC: usize> {
 	tx_ready: usize,
 	/// Has the RX been processed?
 	is_done: bool,
+	/// Are we enabled? If not, start and stop won't work.
+	enabled: bool,
 }
 
 impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
@@ -116,6 +118,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			tx_idx: 0,
 			tx_ready: 0,
 			is_done: false,
+			enabled: false,
 		};
 
 		// Empty the receive register
@@ -126,12 +129,31 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		spi
 	}
 
-	/// Enable the SPI peripheral (i.e. when CS is low)
+	/// Allow the [`Self::start`] and [`Self::stop`] functions to actually work.
 	pub fn enable(&mut self) {
+		self.enabled = true;
+	}
+
+	/// Prevent the [`Self::start`] and [`Self::stop`] functions from working.
+	pub fn disable(&mut self) {
+		self.stop();
+		self.enabled = false;
+	}
+
+	/// Enable the SPI peripheral (i.e. when CS is low)
+	pub fn start(&mut self) {
+		if !self.enabled {
+			return;
+		}
+
 		self.rx_idx = 0;
 		self.tx_idx = 0;
 		self.tx_ready = 0;
 		self.is_done = false;
+		// Empty the receive register
+		while self.has_rx_data() {
+			let _ = self.raw_read();
+		}
 		self.dev.cr1.modify(|_r, w| {
 			w.spe().enabled();
 			w
@@ -144,7 +166,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	}
 
 	/// Disable the SPI peripheral (i.e. when CS is high)
-	pub fn disable(&mut self) {
+	pub fn stop(&mut self) {
 		self.disable_rxne_irq();
 		self.dev.cr1.modify(|_r, w| {
 			w.spe().disabled();
@@ -203,7 +225,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	pub fn handle_isr(&mut self) {
 		let irq_status = self.dev.sr.read();
 		if irq_status.rxne().is_not_empty() {
-			self.read_isr();
+			self.rx_isr();
 		}
 		if irq_status.txe().is_empty() {
 			self.tx_isr();
@@ -211,9 +233,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	}
 
 	/// Try and read from the SPI FIFO
-	///
-	/// If we read some data, we also load any waiting 'reply byte'.
-	fn read_isr(&mut self) {
+	fn rx_isr(&mut self) {
 		let cmd = self.raw_read();
 		if self.rx_idx < self.rx_buffer.len() {
 			self.rx_buffer[self.rx_idx] = cmd;

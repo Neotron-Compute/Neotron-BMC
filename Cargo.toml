@@ -1,0 +1,13 @@
+[workspace]
+
+# Include all the generic library crates
+members = [
+    "neotron-bmc-protocol",
+    "neotron-bmc-commands"
+]
+
+# Exclude the BMC firmwares as they build using different targets/features
+exclude = [
+    "neotron-bmc-pico",
+    "neotron-bmc-nucleo",
+]

@@ -15,14 +15,18 @@
 pub struct Ps2Decoder {
 	bit_mask: u16,
 	collector: u16,
+	ticks: u8,
 }
 
 impl Ps2Decoder {
+	const MAX_TICKS_BEFORE_RESET: u8 = 3;
+
 	/// Create a new PS/2 Decoder
 	pub const fn new() -> Ps2Decoder {
 		Ps2Decoder {
 			bit_mask: 1,
 			collector: 0,
+			ticks: 0,
 		}
 	}
 
@@ -32,11 +36,23 @@ impl Ps2Decoder {
 		self.collector = 0;
 	}
 
+	/// Call this on a timer tick. Too many timer ticks without a new bit
+	/// arriving causes a reset.
+	pub fn poll(&mut self) {
+		if self.collector != 0 {
+			self.ticks += 1;
+			if self.ticks == Self::MAX_TICKS_BEFORE_RESET {
+				self.reset();
+			}
+		}
+	}
+
 	/// Add a bit, and if we have enough, return the 11-bit PS/2 word.
 	pub fn add_bit(&mut self, bit: bool) -> Option<u16> {
 		if bit {
 			self.collector |= self.bit_mask;
 		}
+		self.ticks = 0;
 		// Was that the last bit we needed?
 		if self.bit_mask == 0b100_0000_0000 {
 			let result = self.collector;
