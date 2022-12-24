@@ -2,6 +2,13 @@
 
 ## Unreleased Changes
 
+## v0.4.1
+
+* Update dependencies (moves away from yanked critical-section 0.2.x)
+* Fixes to the protocol documentation
+* Add skeleton SPI command interface, with PS/2 Keyboard FIFO read command
+* PS/2 Keyboard words time-out if you get a glitch
+
 ## v0.4.0
 
 * Add very basic SPI interface support to neotron-bmc-pico

@@ -5,6 +5,7 @@
 // Modules and Imports
 // ============================================================================
 
+#[cfg(feature = "defmt")]
 use defmt::Format;
 
 mod crc;
@@ -34,7 +35,8 @@ pub trait Receivable<'a>: Sized {
 // ============================================================================
 
 /// The ways this API can fail
-#[derive(Debug, Copy, Clone, Format, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub enum Error {
 	BadCrc,
 	BadLength,
@@ -44,8 +46,11 @@ pub enum Error {
 }
 
 /// The kinds of [`Request`] the *Host* can make to the NBMC
+#[derive(
+	Debug, Copy, Clone, PartialEq, Eq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
+)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, Format, PartialEq, Eq)]
 pub enum RequestType {
 	Read = 0xC0,
 	ReadAlt = 0xC1,
@@ -57,7 +62,11 @@ pub enum RequestType {
 
 /// The NBMC returns this code to indicate whether the previous [`Request`] was
 /// succesful or not.
-#[derive(Debug, Copy, Clone, Format, PartialEq, Eq)]
+#[derive(
+	Debug, Copy, Clone, PartialEq, Eq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive,
+)]
+#[cfg_attr(feature = "defmt", derive(Format))]
+#[repr(u8)]
 pub enum ResponseResult {
 	/// The [`Request`] was correctly understood and actioned.
 	Ok = 0xA0,
@@ -85,7 +94,8 @@ pub enum ResponseResult {
 // ============================================================================
 
 /// A *Request* made by the *Host* to the *NBMC*
-#[derive(Debug, Clone, Format, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub struct Request {
 	pub request_type: RequestType,
 	pub register: u8,
@@ -94,7 +104,8 @@ pub struct Request {
 }
 
 /// A *Response* sent by the *NBMC* in reply to a [`Request`] from a *Host*
-#[derive(Debug, Clone, Format, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub struct Response<'a> {
 	pub result: ResponseResult,
 	pub data: &'a [u8],
@@ -103,7 +114,8 @@ pub struct Response<'a> {
 
 /// Describes the [semantic version](https://semver.org) of this implementation
 /// of the NBMC interface.
-#[derive(Debug, Copy, Clone, Format, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub struct ProtocolVersion {
 	major: u8,
 	minor: u8,
@@ -113,22 +125,6 @@ pub struct ProtocolVersion {
 // ============================================================================
 // Impls
 // ============================================================================
-
-impl TryFrom<u8> for RequestType {
-	type Error = Error;
-
-	fn try_from(byte: u8) -> Result<Self, Error> {
-		match byte {
-			0xC0 => Ok(RequestType::Read),
-			0xC1 => Ok(RequestType::ReadAlt),
-			0xC2 => Ok(RequestType::ShortWrite),
-			0xC3 => Ok(RequestType::ShortWriteAlt),
-			0xC4 => Ok(RequestType::LongWrite),
-			0xC5 => Ok(RequestType::LongWriteAlt),
-			_ => Err(Error::BadRequestType),
-		}
-	}
-}
 
 impl Request {
 	/// Make a new Read Request, requesting the given register and number of
@@ -208,6 +204,7 @@ impl Request {
 		]
 	}
 }
+
 impl Sendable for Request {
 	/// Convert to bytes for transmission.
 	///
@@ -223,6 +220,7 @@ impl Sendable for Request {
 		Ok(bytes.len())
 	}
 }
+
 impl<'a> Receivable<'a> for Request {
 	/// Convert from received bytes.
 	///
@@ -244,26 +242,11 @@ impl<'a> Receivable<'a> for Request {
 			return Err(Error::BadCrc);
 		}
 		Ok(Request {
-			request_type: data[0].try_into()?,
+			request_type: data[0].try_into().map_err(|_| Error::BadRequestType)?,
 			register: data[1],
 			length_or_data: data[2],
 			crc: data[3],
 		})
-	}
-}
-
-impl TryFrom<u8> for ResponseResult {
-	type Error = Error;
-
-	fn try_from(byte: u8) -> Result<Self, Error> {
-		match byte {
-			0xA0 => Ok(ResponseResult::Ok),
-			0xA1 => Ok(ResponseResult::CrcFailure),
-			0xA2 => Ok(ResponseResult::BadRequestType),
-			0xA3 => Ok(ResponseResult::BadRegister),
-			0xA4 => Ok(ResponseResult::BadLength),
-			_ => Err(Error::BadResponseResult),
-		}
 	}
 }
 
@@ -346,7 +329,7 @@ impl<'a> Receivable<'a> for Response<'a> {
 			return Err(Error::BadCrc);
 		}
 		Ok(Response {
-			result: data[0].try_into()?,
+			result: data[0].try_into().map_err(|_| Error::BadResponseResult)?,
 			data: &data[1..=(data.len() - 2)],
 			crc: data[data.len() - 1],
 		})
