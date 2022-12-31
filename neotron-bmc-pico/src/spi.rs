@@ -17,17 +17,15 @@ pub struct SpiPeripheral<const RXC: usize, const TXC: usize> {
 	tx_idx: usize,
 	/// How many bytes are loaded into the TX buffer
 	tx_ready: usize,
-	/// Has the RX been processed?
+	/// Has the RX been processed? If so, lie and say we don't have any data
+	/// (otherwise we process incoming messages multiple times).
 	is_done: bool,
-	/// Are we enabled? If not, start and stop won't work.
-	enabled: bool,
 }
 
 impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	pub fn new<SCKPIN, MISOPIN, MOSIPIN>(
 		dev: pac::SPI1,
 		pins: (SCKPIN, MISOPIN, MOSIPIN),
-		speed_hz: u32,
 		rcc: &mut Rcc,
 	) -> SpiPeripheral<RXC, TXC>
 	where
@@ -35,11 +33,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		MISOPIN: stm32f0xx_hal::spi::MisoPin<pac::SPI1>,
 		MOSIPIN: stm32f0xx_hal::spi::MosiPin<pac::SPI1>,
 	{
-		defmt::info!(
-			"pclk = {}, incoming spi_clock = {}",
-			rcc.clocks.pclk().0,
-			speed_hz
-		);
+		defmt::info!("pclk = {}", rcc.clocks.pclk().0,);
 
 		let mode = embedded_hal::spi::MODE_0;
 
@@ -80,9 +74,9 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			w.lsbfirst().clear_bit();
 			// 2e. Configure the CRCL and CRCEN bits if CRC is needed (it is not)
 			w.crcen().disabled();
-			// 2f. Turn off soft-slave-management (SSM) and slave-select-internal (SSI)
-			w.ssm().disabled();
-			w.ssi().slave_selected();
+			// 2f. Turn on soft-slave-management (SSM) (we control the NSS signal with the SSI bit).
+			w.ssm().enabled();
+			w.ssi().slave_not_selected();
 			// 2g. Set the Master bit low for slave mode
 			w.mstr().slave();
 			w
@@ -90,19 +84,23 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 		// 3. Write to SPI_CR2 register
 		dev.cr2.write(|w| {
-			// 3a. Configure the DS[3:0] bits to select the data length for the transfer.
+			// 3a. Configure the DS[3:0] bits to select the data length for the transfer (0b111 = 8-bit words).
 			unsafe { w.ds().bits(0b111) };
-			// 3b. Disable hard-output on the CS pin
+			// 3b. Disable hard-output on the CS pin (ignored in Master mode)
 			w.ssoe().disabled();
 			// 3c. Frame Format
 			w.frf().motorola();
 			// 3d. Set NSSP bit if required (we don't want NSS Pulse mode)
 			w.nssp().no_pulse();
-			// 3e. Configure the FIFO RX Threshold to 1/4 FIFO
+			// 3e. Configure the FIFO RX Threshold to 1/4 FIFO (8 bits)
 			w.frxth().quarter();
-			// 3f. LDMA_TX and LDMA_RX for DMA mode - not used
-			// Extra: Turn on RX Not Empty Interrupt Enable
-			w.rxneie().set_bit();
+			// 3f. Disable DMA mode
+			w.txdmaen().disabled();
+			w.rxdmaen().disabled();
+			// Extra: Turn on RX, TX and Error interrupts
+			w.rxneie().not_masked();
+			w.txeie().not_masked();
+			w.errie().not_masked();
 			w
 		});
 
@@ -118,7 +116,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			tx_idx: 0,
 			tx_ready: 0,
 			is_done: false,
-			enabled: false,
 		};
 
 		// Empty the receive register
@@ -129,23 +126,8 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		spi
 	}
 
-	/// Allow the [`Self::start`] and [`Self::stop`] functions to actually work.
-	pub fn enable(&mut self) {
-		self.enabled = true;
-	}
-
-	/// Prevent the [`Self::start`] and [`Self::stop`] functions from working.
-	pub fn disable(&mut self) {
-		self.stop();
-		self.enabled = false;
-	}
-
-	/// Enable the SPI peripheral (i.e. when CS is low)
+	/// Enable the SPI peripheral (i.e. when CS goes low)
 	pub fn start(&mut self) {
-		if !self.enabled {
-			return;
-		}
-
 		self.rx_idx = 0;
 		self.tx_idx = 0;
 		self.tx_ready = 0;
@@ -155,37 +137,18 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			let _ = self.raw_read();
 		}
 		self.dev.cr1.modify(|_r, w| {
-			w.spe().enabled();
+			w.ssi().slave_selected();
 			w
 		});
 		// Load our dummy byte (our TX FIFO will send this then repeat it whilst
 		// it underflows during the receive phase).
 		self.raw_write(0xFF);
-		// Get an IRQ when there's RX data available
-		self.enable_rxne_irq();
 	}
 
-	/// Disable the SPI peripheral (i.e. when CS is high)
+	/// Disable the SPI peripheral (i.e. when CS goes high)
 	pub fn stop(&mut self) {
-		self.disable_rxne_irq();
 		self.dev.cr1.modify(|_r, w| {
-			w.spe().disabled();
-			w
-		});
-	}
-
-	/// Enable RX Not Empty interrupt
-	fn enable_rxne_irq(&mut self) {
-		self.dev.cr2.modify(|_r, w| {
-			w.rxneie().set_bit();
-			w
-		});
-	}
-
-	/// Disable RX Not Empty interrupt
-	fn disable_rxne_irq(&mut self) {
-		self.dev.cr2.modify(|_r, w| {
-			w.rxneie().clear_bit();
+			w.ssi().slave_not_selected();
 			w
 		});
 	}
@@ -197,13 +160,13 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 	fn raw_read(&mut self) -> u8 {
 		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
-		// So force a 16-bit read.
+		// So force an 8-bit read.
 		unsafe { core::ptr::read_volatile(&self.dev.dr as *const _ as *const u8) }
 	}
 
 	fn raw_write(&mut self, data: u8) {
-		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
-		// So force a 16-bit read.
+		// PAC only supports 16-bit read, but that pushes two bytes onto the FIFO.
+		// So force an 8-bit write.
 		unsafe { core::ptr::write_volatile(&self.dev.dr as *const _ as *mut u8, data) }
 	}
 
@@ -224,6 +187,10 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 	pub fn handle_isr(&mut self) {
 		let irq_status = self.dev.sr.read();
+		if irq_status.fre().is_error() || irq_status.ovr().is_overrun() {
+			// Handle errors!?
+			defmt::info!("SPI sr=0b{:08b}", irq_status.bits());
+		}
 		if irq_status.rxne().is_not_empty() {
 			self.rx_isr();
 		}
@@ -244,9 +211,10 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	/// Call this in the TXEIE interrupt. It will load the SPI FIFO with some
 	/// data, either from `tx_buffer` or a padding byte.
 	fn tx_isr(&mut self) {
-		if (self.tx_idx < self.tx_ready) && (self.tx_idx < self.tx_buffer.len()) {
-			// We have some data yet to send
-			let next_tx = self.tx_buffer[self.tx_idx];
+		if self.tx_idx < self.tx_ready {
+			// We have some data yet to send. This is safe as long as we do the
+			// bounds check when we set `self.tx_ready`.
+			let next_tx = unsafe { *self.tx_buffer.get_unchecked(self.tx_idx) };
 			self.raw_write(next_tx);
 			self.tx_idx += 1;
 		} else {
@@ -262,12 +230,15 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		self.tx_ready = 0;
 		self.tx_idx = 0;
 		if data.len() > TXC {
-			// Too much data
+			// Too much data. This check is important for safety in
+			// [`Self::tx_isr`].
 			return Err(TXC);
 		}
 		for (inc, space) in data.iter().zip(self.tx_buffer.iter_mut()) {
 			*space = *inc;
 		}
+		// We must never set this to be longer than `TXC` as we do an unchecked
+		// read from `self.tx_buffer` in [`Self::tx_isr`].
 		self.tx_ready = data.len();
 		Ok(())
 	}
@@ -284,7 +255,9 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 		match message.render_to_buffer(&mut self.tx_buffer) {
 			Ok(n) => {
-				self.tx_ready = n;
+				// We must never set this to be longer than `TXC` as we do an
+				// unchecked read from `self.tx_buffer` in [`Self::tx_isr`].
+				self.tx_ready = n.min(TXC);
 				Ok(())
 			}
 			Err(_) => Err(()),
