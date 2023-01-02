@@ -97,9 +97,11 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			// 3f. Disable DMA mode
 			w.txdmaen().disabled();
 			w.rxdmaen().disabled();
-			// Extra: Turn on RX, TX and Error interrupts
+			// Extra: Turn on RX and Error interrupts, but not TX. The TX
+			// interrupt is turned off because we deliberately underflow the
+			// FIFO during the receive phase of the transaction.
 			w.rxneie().not_masked();
-			w.txeie().not_masked();
+			w.txeie().masked();
 			w.errie().not_masked();
 			w
 		});
@@ -123,6 +125,14 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			let _ = spi.raw_read();
 		}
 
+		// Enable the SPI device
+		spi.stop();
+		spi.dev.cr1.write(|w| {
+			// Enable the peripheral
+			w.spe().enabled();
+			w
+		});
+
 		spi
 	}
 
@@ -140,9 +150,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			w.ssi().slave_selected();
 			w
 		});
-		// Load our dummy byte (our TX FIFO will send this then repeat it whilst
-		// it underflows during the receive phase).
-		self.raw_write(0xFF);
 	}
 
 	/// Disable the SPI peripheral (i.e. when CS goes high)
@@ -187,10 +194,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 	pub fn handle_isr(&mut self) {
 		let irq_status = self.dev.sr.read();
-		if irq_status.fre().is_error() || irq_status.ovr().is_overrun() {
-			// Handle errors!?
-			defmt::info!("SPI sr=0b{:08b}", irq_status.bits());
-		}
 		if irq_status.rxne().is_not_empty() {
 			self.rx_isr();
 		}
@@ -218,8 +221,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			self.raw_write(next_tx);
 			self.tx_idx += 1;
 		} else {
-			// No data - send padding
-			self.raw_write(0xFF);
+			// No data - send nothing
 		}
 	}
 

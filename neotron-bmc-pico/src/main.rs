@@ -446,6 +446,7 @@ mod app {
 				Some(Message::SpiDisable) => {
 					// Turn off the SPI peripheral. Don't need to check power state for this.
 					ctx.shared.spi.lock(|s| s.stop());
+					defmt::trace!("SPI Disable");
 				}
 				Some(Message::SpiRequest(req)) => {
 					process_command(req, &mut register_state, |rsp| {
