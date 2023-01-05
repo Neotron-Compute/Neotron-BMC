@@ -80,6 +80,10 @@ mod app {
 		Ps2Data1(u16),
 		/// Message from SPI bus
 		SpiRequest(neotron_bmc_protocol::Request),
+		/// SPI CS went low (active)
+		SpiEnable,
+		/// SPI CS went high (inactive)
+		SpiDisable,
 		/// The power button was given a press
 		PowerButtonShortPress,
 		/// The power button was held down
@@ -281,7 +285,6 @@ mod app {
 		let spi = neotron_bmc_pico::spi::SpiPeripheral::new(
 			dp.SPI1,
 			(pin_sck, pin_cipo, pin_copi),
-			2_000_000,
 			&mut rcc,
 		);
 
@@ -347,7 +350,7 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, pin_cs])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
@@ -377,36 +380,46 @@ mod app {
 				}
 				Some(Message::PowerButtonLongPress) => {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
-						defmt::info!("Power button held whilst on.");
+						defmt::info!("Power off requested!");
 						ctx.shared
 							.state_dc_power_enabled
 							.lock(|r| *r = DcPowerState::Off);
-						defmt::info!("Power off!");
+						// Stop any SPI stuff that's currently going on (the host is about to be powered off)
+						ctx.shared.spi.lock(|s| s.stop());
+						// Put the host into reset
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						// Shut off the 5V power
 						ctx.shared.pin_dc_on.set_low().unwrap();
-						ctx.shared.spi.lock(|s| s.disable());
 						// Start LED blinking again
 						led_power_blink::spawn().unwrap();
 					}
 				}
 				Some(Message::PowerButtonShortPress) => {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Off {
-						defmt::info!("Power button pressed whilst off. Powering up.");
-						// Button pressed - power on system
+						defmt::info!("Power up requested!");
+						// Button pressed - power on system.
+						// Step 1 - Note our new power state
 						ctx.shared
 							.state_dc_power_enabled
 							.lock(|r| *r = DcPowerState::Starting);
+						// Step 2 - Hold reset line (active) low
+						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						// Step 3 - Turn on PSU
 						ctx.shared.pin_dc_on.set_high().unwrap();
+						// Step 4 - Leave it in reset for a while.
 						// TODO: Start monitoring 3.3V and 5.0V rails here
 						// TODO: Take system out of reset when 3.3V and 5.0V are good
-						ctx.shared.pin_sys_reset.lock(|pin| pin.set_high().unwrap());
-						ctx.shared.spi.lock(|s| s.enable());
+						// Returns an error if it's already scheduled (but we don't care)
+						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
 					}
 				}
 				Some(Message::PowerButtonRelease) => {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Starting {
 						defmt::info!("Power button released.");
-						// Button released after power on
+						// Button released after power on. Change the power
+						// state machine t "On". We were in 'Starting' to ignore
+						// any further button events until the button had been
+						// released.
 						ctx.shared
 							.state_dc_power_enabled
 							.lock(|r| *r = DcPowerState::On);
@@ -417,9 +430,23 @@ mod app {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 						defmt::info!("Reset!");
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
-						// Returns an error if it's already scheduled
+						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
 					}
+				}
+				Some(Message::SpiEnable) => {
+					if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
+						// Turn on the SPI peripheral
+						ctx.shared.spi.lock(|s| s.start());
+					} else {
+						// Ignore message - it'll be the CS line being pulled low when the host is powered off
+						defmt::info!("Ignoring spurious CS low");
+					}
+				}
+				Some(Message::SpiDisable) => {
+					// Turn off the SPI peripheral. Don't need to check power state for this.
+					ctx.shared.spi.lock(|s| s.stop());
+					defmt::trace!("SPI Disable");
 				}
 				Some(Message::SpiRequest(req)) => {
 					process_command(req, &mut register_state, |rsp| {
@@ -487,7 +514,7 @@ mod app {
 	#[task(
 		binds = EXTI4_15,
 		priority = 4,
-		shared = [ps2_clk0, msg_q_in, ps2_dat0, exti, spi, pin_cs, kb_decoder],
+		shared = [ps2_clk0, msg_q_in, ps2_dat0, exti, pin_cs, kb_decoder],
 	)]
 	fn exti4_15_interrupt(mut ctx: exti4_15_interrupt::Context) {
 		let pr = ctx.shared.exti.pr.read();
@@ -511,12 +538,15 @@ mod app {
 		}
 
 		if pr.pr4().bit_is_set() {
-			if ctx.shared.pin_cs.lock(|pin| pin.is_low().unwrap()) {
-				// If incoming Chip Select is low, turn on the SPI engine
-				ctx.shared.spi.lock(|s| s.start());
+			let msg = if ctx.shared.pin_cs.lock(|pin| pin.is_low().unwrap()) {
+				// If incoming Chip Select is low, tell the main thread to turn on the SPI engine
+				Message::SpiEnable
 			} else {
-				// If incoming Chip Select is high, turn off the SPI engine
-				ctx.shared.spi.lock(|s| s.stop());
+				// If incoming Chip Select is high, tell the main thread to turn off the SPI engine
+				Message::SpiDisable
+			};
+			if ctx.shared.msg_q_in.lock(|q| q.enqueue(msg)).is_err() {
+				panic!("queue full");
 			}
 			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr4().set_bit());
@@ -663,7 +693,8 @@ mod app {
 	#[task(shared = [pin_sys_reset, state_dc_power_enabled])]
 	fn exit_reset(mut ctx: exit_reset::Context) {
 		defmt::debug!("End reset");
-		if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
+		if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
+			// Raising the reset line takes the rest of the system out of reset
 			ctx.shared.pin_sys_reset.lock(|pin| pin.set_high().unwrap());
 		}
 	}
