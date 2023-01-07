@@ -2,6 +2,11 @@
 
 ## Unreleased Changes
 
+## v0.4.2
+
+* Improvements to SPI communications link
+* Move some processing out of interrupts and into the main loop, to improve reliability
+
 ## v0.4.1
 
 * Update dependencies (moves away from yanked critical-section 0.2.x)
