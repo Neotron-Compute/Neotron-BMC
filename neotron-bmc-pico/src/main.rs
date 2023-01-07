@@ -22,7 +22,7 @@ use stm32f0xx_hal::{
 	gpio::{Alternate, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
-	serial,
+	rcc, serial,
 };
 
 use neotron_bmc_commands::Command;
@@ -163,6 +163,8 @@ mod app {
 		press_button_power_long: debouncr::Debouncer<u16, debouncr::Repeat16>,
 		/// Tracks reset button state for short presses. 75ms x 2 = 150ms is a long press
 		press_button_reset_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
+		/// Run-time Clock Control (required for resetting peripheral blocks)
+		rcc: Option<rcc::Rcc>,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
@@ -342,6 +344,7 @@ mod app {
 			press_button_power_short: debouncr::debounce_2(false),
 			press_button_power_long: debouncr::debounce_16(false),
 			press_button_reset_short: debouncr::debounce_2(false),
+			rcc: Some(rcc),
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -350,14 +353,15 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset], local = [rcc])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
 			firmware_version: *b"Neotron BMC v0.4.1-alpha\x00\x00\x00\x00\x00\x00\x00\x00",
 			..Default::default()
 		};
-
+		// Take this out of the `local` object to avoid sharing issues.
+		let mut rcc = ctx.local.rcc.take().unwrap();
 		defmt::info!("Idle is running...");
 		loop {
 			match ctx.shared.msg_q_out.dequeue() {
@@ -430,6 +434,7 @@ mod app {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 						defmt::info!("Reset!");
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						ctx.shared.spi.lock(|s| s.reset(&mut rcc));
 						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
 					}
