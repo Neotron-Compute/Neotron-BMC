@@ -2,7 +2,7 @@
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
 name = "neotron-bmc-pico"
 edition = "2018"
-version = "0.4.2"
+version = "0.4.3"
 
 [dependencies]
 cortex-m = { version = "0.7.5", features = ["inline-asm", "critical-section-single-core"] }
