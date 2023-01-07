@@ -2,6 +2,12 @@
 
 ## Unreleased Changes
 
+* None
+
+## v0.4.3
+
+* Fix version number reporting - now comes from `git describe`
+
 ## v0.4.2
 
 * Improvements to SPI communications link
