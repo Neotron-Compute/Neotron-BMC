@@ -26,7 +26,7 @@ The MCU has:
 | 12   | PA6  | SPI1_CIPO   | SPI Data Output                              |
 | 13   | PA7  | SPI1_COPI   | SPI Data Input                               |
 | 14   | PB0  | LED         | Output for Power LED                         |
-| 15   | PB1  | BUZZER      | PWM Output for Buzzer                        |
+| 15   | PB1  | SPEAKER     | PWM Output for Speaker                       |
 | 18   | PA8  | IRQ_nHOST   | Interrupt Output to the Host (active low)    |
 | 19   | PA9  | USART1_TX   | UART Transmit Output                         |
 | 20   | PA10 | USART1_RX   | UART Receive Input                           |

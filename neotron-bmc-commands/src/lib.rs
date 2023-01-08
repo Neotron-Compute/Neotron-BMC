@@ -137,4 +137,24 @@ pub enum Command {
 	/// * Length: 4
 	/// * Mode: R/W
 	I2cBaudRate = 0x64,
+	/// # Speaker Duration
+	/// Duration of note, in milliseconds
+	/// * Length: 1
+	/// * Mode: R/W
+	SpeakerDuration = 0x70,
+	/// # Speaker Period (High byte)
+	/// High byte of period (in 48kHz ticks)
+	/// * Length: 1
+	/// * Mode: R/W
+	SpeakerPeriodHigh = 0x71,
+	/// # Speaker Period (High byte)
+	/// High byte of period (in 48kHz ticks)
+	/// * Length: 1
+	/// * Mode: R/W
+	SpeakerPeriodLow = 0x72,
+	/// # Speaker Duty Cycle
+	/// Speaker Duty cycle, in 1/255
+	/// * Length: 1
+	/// * Mode: R/W
+	SpeakerDutyCycle = 0x73
 }
