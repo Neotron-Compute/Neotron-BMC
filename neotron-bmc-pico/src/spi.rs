@@ -293,31 +293,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		}
 	}
 
-	/// Load some data into the TX buffer.
-	///
-	/// You get an error if you try to load too much.
-	pub fn set_transmit(&mut self, data: &[u8]) -> Result<(), usize> {
-		self.tx_ready = 0;
-		self.tx_idx = 0;
-		if data.len() > TXC {
-			// Too much data. This check is important for safety in
-			// [`Self::tx_isr`].
-			return Err(TXC);
-		}
-		for (inc, space) in data.iter().zip(self.tx_buffer.iter_mut()) {
-			*space = *inc;
-		}
-		// We must never set this to be longer than `TXC` as we do an unchecked
-		// read from `self.tx_buffer` in [`Self::tx_isr`].
-		self.tx_ready = data.len();
-		// Turn on the TX interrupt
-		self.dev.cr2.write(|w| {
-			w.txeie().not_masked();
-			w
-		});
-		Ok(())
-	}
-
 	/// Render some message into the TX buffer.
 	///
 	/// You get an error if you try to load too much.
@@ -328,11 +303,14 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		self.tx_ready = 0;
 		self.tx_idx = 0;
 
-		match message.render_to_buffer(&mut self.tx_buffer) {
+		// SPI FIFO seems to corrupt the first byte we load. So load a dummy one
+		// we don't care about.
+		self.tx_buffer[0] = 0xFF;
+		match message.render_to_buffer(&mut self.tx_buffer[1..]) {
 			Ok(n) => {
 				// We must never set this to be longer than `TXC` as we do an
 				// unchecked read from `self.tx_buffer` in [`Self::tx_isr`].
-				self.tx_ready = n.min(TXC);
+				self.tx_ready = (n + 1).min(TXC);
 				// Turn on the TX interrupt
 				self.dev.cr2.write(|w| {
 					w.txeie().not_masked();
