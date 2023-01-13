@@ -78,8 +78,8 @@ mod app {
 		Ps2Data0(u16),
 		/// Word from PS/2 port 1
 		Ps2Data1(u16),
-		/// Message from SPI bus
-		SpiRequest(neotron_bmc_protocol::Request),
+		/// SPI driver has a Request for us
+		SpiRx,
 		/// SPI CS went low (active)
 		SpiEnable,
 		/// SPI CS went high (inactive)
@@ -444,8 +444,9 @@ mod app {
 				}
 				Some(Message::SpiEnable) => {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
-						// Turn on the SPI peripheral
-						ctx.shared.spi.lock(|s| s.start());
+						// Turn on the SPI peripheral and expect four bytes (the
+						// length of a Request).
+						ctx.shared.spi.lock(|s| s.start(4));
 					} else {
 						// Ignore message - it'll be the CS line being pulled low when the host is powered off
 						defmt::info!("Ignoring spurious CS low");
@@ -456,12 +457,39 @@ mod app {
 					ctx.shared.spi.lock(|s| s.stop());
 					defmt::trace!("SPI Disable");
 				}
-				Some(Message::SpiRequest(req)) => {
-					process_command(req, &mut register_state, |rsp| {
-						ctx.shared.spi.lock(|spi| {
-							spi.set_transmit_sendable(rsp).unwrap();
-						});
+				Some(Message::SpiRx) => {
+					defmt::trace!("SpiRx");
+					// Look for something in the SPI bytes received buffer:
+					let mut req = None;
+					ctx.shared.spi.lock(|spi| {
+						if let Some((data, crc)) = spi.get_received() {
+							use proto::Receivable;
+							match proto::Request::from_bytes_with_crc(data, crc) {
+								Ok(inner_req) => {
+									defmt::debug!("Got packet");
+									req = Some(inner_req);
+								}
+								Err(proto::Error::BadLength) => {
+									// This is a programming bug. We said
+									// start(4) earlier, so there should be four
+									// bytes here.
+									panic!("Wanted 4, got {}", data.len());
+								}
+								Err(e) => {
+									defmt::warn!("Bad Req {:?} ({=[u8]:x}", e, data);
+								}
+							}
+						}
 					});
+
+					// If we got a valid message, queue it so we can look at it next time around
+					if let Some(req) = req {
+						process_command(req, &mut register_state, |rsp| {
+							ctx.shared.spi.lock(|spi| {
+								spi.set_transmit_sendable(rsp).unwrap();
+							});
+						});
+					}
 				}
 				Some(Message::UartByte(rx_byte)) => {
 					defmt::info!("UART RX {:?}", rx_byte);
@@ -470,44 +498,6 @@ mod app {
 				}
 				None => {
 					// No messages
-				}
-			}
-
-			// Look for something in the SPI bytes received buffer:
-			let mut req = None;
-			ctx.shared.spi.lock(|spi| {
-				let mut mark_done = false;
-				if let Some(data) = spi.get_received() {
-					use proto::Receivable;
-					match proto::Request::from_bytes(data) {
-						Ok(inner_req) => {
-							mark_done = true;
-							req = Some(inner_req);
-						}
-						Err(proto::Error::BadLength) => {
-							// Need more data
-						}
-						Err(e) => {
-							defmt::warn!("Bad Req {:?} ({=[u8]:x}", e, data);
-							mark_done = true;
-						}
-					}
-				}
-				if mark_done {
-					// Couldn't do this whilst holding the `data` ref.
-					spi.mark_done();
-				}
-			});
-
-			// If we got a valid message, queue it so we can look at it next time around
-			if let Some(req) = req {
-				if ctx
-					.shared
-					.msg_q_in
-					.lock(|q| q.enqueue(Message::SpiRequest(req)))
-					.is_err()
-				{
-					panic!("Q full!");
 				}
 			}
 			// TODO: Read ADC for 3.3V and 5.0V rails and check good
@@ -580,11 +570,12 @@ mod app {
 	///
 	/// It fires whenever there is new data received on SPI1. We should flag to the host
 	/// that data is available.
-	#[task(binds = SPI1, shared = [spi])]
+	#[task(binds = SPI1, shared = [spi, msg_q_in])]
 	fn spi1_interrupt(mut ctx: spi1_interrupt::Context) {
-		ctx.shared.spi.lock(|spi| {
-			spi.handle_isr();
-		});
+		let has_message = ctx.shared.spi.lock(|spi| spi.handle_isr());
+		if has_message {
+			let _ = ctx.shared.msg_q_in.lock(|q| q.enqueue(Message::SpiRx));
+		}
 	}
 
 	/// This is the LED blink task.
