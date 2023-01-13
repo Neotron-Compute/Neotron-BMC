@@ -171,6 +171,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		// Tell the SPI engine it has a chip-select
 		self.dev.cr1.modify(|_r, w| {
 			w.ssi().slave_selected();
+			w.spe().enabled();
 			w
 		});
 	}
@@ -179,6 +180,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	pub fn stop(&mut self) {
 		self.dev.cr1.modify(|_r, w| {
 			w.ssi().slave_not_selected();
+			w.spe().disabled();
 			w
 		});
 	}
