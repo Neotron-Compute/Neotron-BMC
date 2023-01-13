@@ -16,7 +16,7 @@ use core::convert::TryFrom;
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA9},
+	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
 	gpio::gpiob::{PB0, PB1, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
 	gpio::{Alternate, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
@@ -165,6 +165,8 @@ mod app {
 		press_button_reset_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Run-time Clock Control (required for resetting peripheral blocks)
 		rcc: Option<rcc::Rcc>,
+		/// IRQ pin
+		pin_irq: PA8<Output<PushPull>>,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
@@ -230,6 +232,7 @@ mod app {
 			pin_sck,
 			pin_cipo,
 			pin_copi,
+			mut pin_irq,
 		) = cortex_m::interrupt::free(|cs| {
 			(
 				// uart_tx,
@@ -273,11 +276,21 @@ mod app {
 				},
 				// pin_copi,
 				gpioa.pa7.into_alternate_af0(cs),
+				// pin_irq
+				gpioa.pa8.into_push_pull_output(cs),
 			)
 		});
 
+		// Put host in reset
 		pin_sys_reset.set_low().unwrap();
+		// Turn the PSU off
 		pin_dc_on.set_low().unwrap();
+		// IRQ is active low; we have no need for service.
+		pin_irq.set_high().unwrap();
+		// Power LED is off
+		led_power.set_low().unwrap();
+		// Buzzer is off
+		_buzzer_pwm.set_low().unwrap();
 
 		defmt::info!("Creating UART...");
 
@@ -292,9 +305,6 @@ mod app {
 			(pin_sck, pin_cipo, pin_copi),
 			&mut rcc,
 		);
-
-		led_power.set_low().unwrap();
-		_buzzer_pwm.set_low().unwrap();
 
 		// Set EXTI15 to use PORT A (PA15) - button input
 		dp.SYSCFG.exticr4.modify(|_r, w| w.exti15().pa15());
@@ -348,6 +358,7 @@ mod app {
 			press_button_power_long: debouncr::debounce_16(false),
 			press_button_reset_short: debouncr::debounce_2(false),
 			rcc: Some(rcc),
+			pin_irq,
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -356,7 +367,7 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset], local = [rcc])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset], local = [rcc, pin_irq])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
@@ -366,7 +377,25 @@ mod app {
 		// Take this out of the `local` object to avoid sharing issues.
 		let mut rcc = ctx.local.rcc.take().unwrap();
 		defmt::info!("Idle is running...");
+		let mut irq_masked = true;
+		let mut is_high = false;
 		loop {
+			if !irq_masked && !register_state.ps2_kb_bytes.is_empty() {
+				// We need service
+				ctx.local.pin_irq.set_low().unwrap();
+				if is_high {
+					defmt::trace!("irq set");
+					is_high = false;
+				}
+			} else {
+				// We do not need service
+				ctx.local.pin_irq.set_high().unwrap();
+				if !is_high {
+					defmt::trace!("irq clear");
+					is_high = true;
+				}
+			}
+
 			match ctx.shared.msg_q_out.dequeue() {
 				Some(Message::Ps2Data0(word)) => {
 					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
@@ -397,6 +426,8 @@ mod app {
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
 						// Shut off the 5V power
 						ctx.shared.pin_dc_on.set_low().unwrap();
+						// Mask the IRQ to avoid back-powering the host
+						irq_masked = true;
 						// Start LED blinking again
 						led_power_blink::spawn().unwrap();
 					}
@@ -418,6 +449,8 @@ mod app {
 						// TODO: Take system out of reset when 3.3V and 5.0V are good
 						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
+						// Set 5 - unmask the IRQ
+						irq_masked = false;
 					}
 				}
 				Some(Message::PowerButtonRelease) => {
@@ -466,7 +499,7 @@ mod app {
 							use proto::Receivable;
 							match proto::Request::from_bytes_with_crc(data, crc) {
 								Ok(inner_req) => {
-									defmt::debug!("Got packet");
+									defmt::trace!("Got packet");
 									req = Some(inner_req);
 								}
 								Err(proto::Error::BadLength) => {
@@ -708,7 +741,7 @@ where
 		// A duplicate! Resend what we sent last time (so we don't affect FIFOs with a duplicate read).
 		let length = req.length_or_data as usize;
 		let rsp = proto::Response::new_ok_with_data(&register_state.scratch[0..length]);
-		defmt::warn!("Retry");
+		defmt::debug!("Detected a retry");
 		rsp_handler(&rsp);
 		return;
 	}
