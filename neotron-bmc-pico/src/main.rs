@@ -809,11 +809,4 @@ where
 	// defmt::debug!("Sent {:?}", rsp);
 }
 
-// TODO: Pins we haven't used yet
-// SPI pins
-// spi_clk: gpioa.pa5.into_alternate_af0(cs),
-// spi_cipo: gpioa.pa6.into_alternate_af0(cs),
-// spi_copi: gpioa.pa7.into_alternate_af0(cs),
-// I²C pins
-// i2c_scl: gpiob.pb6.into_alternate_af4(cs),
-// i2c_sda: gpiob.pb7.into_alternate_af4(cs),
+// End of file
