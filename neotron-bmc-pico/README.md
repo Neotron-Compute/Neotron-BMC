@@ -56,6 +56,10 @@ This design should also be pin-compatible with the following SoCs (although this
 
 Note that not all STM32 pins are 5V-tolerant, and the PS/2 protocol is a 5V open-collector system, so ensure that whichever part you pick has 5V-tolerant pins (marked `FT` or `FTt` in the datasheet) for the PS/2 signals. All of the parts above _should_ be OK, but they haven't been tested. Let us know if you try one!
 
+## SPI Communications Protocol
+
+The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on rising edge) at 1 MHz (higher speeds TBD). It uses frames made up of 8-bit words.
+
 ## Build Requirements
 
 1. `rustup` and Rust
