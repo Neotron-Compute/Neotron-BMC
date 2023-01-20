@@ -421,7 +421,7 @@ mod app {
 							.state_dc_power_enabled
 							.lock(|r| *r = DcPowerState::Off);
 						// Stop any SPI stuff that's currently going on (the host is about to be powered off)
-						ctx.shared.spi.lock(|s| s.stop());
+						ctx.shared.spi.lock(|s| s.reset(&mut rcc));
 						// Put the host into reset
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
 						// Shut off the 5V power
@@ -469,8 +469,11 @@ mod app {
 					// Is the board powered on? Don't do a reset if it's powered off.
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 						defmt::info!("Reset!");
-						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						// Step 1 - Stop any SPI stuff that's currently going on (the host is about to be reset)
 						ctx.shared.spi.lock(|s| s.reset(&mut rcc));
+						// Step 2 - Hold reset line (active) low
+						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						// Step 3 - Take it out of reset in a short while
 						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
 					}
