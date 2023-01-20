@@ -19,9 +19,15 @@ fn main() {
 	// Generate a file containing the firmware version
 	let version_output = std::process::Command::new("git")
 		.current_dir(env::var_os("CARGO_MANIFEST_DIR").unwrap())
-		.args(["describe", "--long", "--dirty"])
+		.args(["describe", "--tags", "--dirty"])
 		.output()
 		.expect("running git-describe");
+
+	println!(
+		"Version is {:?}",
+		std::str::from_utf8(&version_output.stdout)
+	);
+	println!("Error is {:?}", std::str::from_utf8(&version_output.stderr));
 	assert!(version_output.status.success());
 
 	// Remove the trailing newline
@@ -32,6 +38,7 @@ fn main() {
 		panic!("Version too long!");
 	}
 
+	// Pad it
 	while output.len() < 32 {
 		output.push(0);
 	}
