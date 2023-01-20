@@ -39,7 +39,9 @@ See the [board-specific README](./neotron-bmc-pico/README.md)
 
 The NBMC firmware can also run on an ST Micro STM32F4 Nucleo board.
 
-See the [board-specific README](./neotron-bmc-nucleo/README.md)
+See the [board-specific README](./neotron-bmc-nucleo/README.md).
+
+It's currently quite out of date compared to the Neotron Pico version.
 
 ## SPI Communications Protocol
 

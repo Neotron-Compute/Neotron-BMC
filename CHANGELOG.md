@@ -4,6 +4,11 @@
 
 * None
 
+## v0.5.0
+
+* Generates Host Interrupts
+* SPI interface reliability is improved
+
 ## v0.4.3
 
 * Fix version number reporting - now comes from `git describe`
