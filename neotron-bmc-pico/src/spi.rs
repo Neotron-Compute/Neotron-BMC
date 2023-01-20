@@ -67,11 +67,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 		// Enable the SPI device
 		spi.stop();
-		spi.dev.cr1.write(|w| {
-			// Enable the peripheral
-			w.spe().enabled();
-			w
-		});
 
 		spi
 	}
@@ -186,6 +181,9 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	}
 
 	/// Fully reset the SPI peripheral
+	///
+	/// This is like calling [`Self::stop()`] but it reboots the IP block to clear any
+	/// partial words from the RX FIFO.
 	pub fn reset(&mut self, _rcc: &mut stm32f0xx_hal::rcc::Rcc) {
 		self.dev.cr1.write(|w| {
 			// Disable the peripheral
@@ -211,13 +209,8 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			let _ = self.raw_read();
 		}
 
-		// Enable the SPI device and leave it idle
+		// Leave the SPI device turned off
 		self.stop();
-		self.dev.cr1.write(|w| {
-			// Enable the peripheral
-			w.spe().enabled();
-			w
-		});
 	}
 
 	/// Does the RX FIFO have any data in it?
