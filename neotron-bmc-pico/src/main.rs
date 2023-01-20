@@ -16,7 +16,7 @@ use core::convert::TryFrom;
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA9},
+	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
 	gpio::gpiob::{PB0, PB1, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
 	gpio::{Alternate, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
@@ -78,8 +78,8 @@ mod app {
 		Ps2Data0(u16),
 		/// Word from PS/2 port 1
 		Ps2Data1(u16),
-		/// Message from SPI bus
-		SpiRequest(neotron_bmc_protocol::Request),
+		/// SPI driver has a Request for us
+		SpiRx,
 		/// SPI CS went low (active)
 		SpiEnable,
 		/// SPI CS went high (inactive)
@@ -165,6 +165,8 @@ mod app {
 		press_button_reset_short: debouncr::Debouncer<u8, debouncr::Repeat2>,
 		/// Run-time Clock Control (required for resetting peripheral blocks)
 		rcc: Option<rcc::Rcc>,
+		/// IRQ pin
+		pin_irq: PA8<Output<PushPull>>,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
@@ -230,6 +232,7 @@ mod app {
 			pin_sck,
 			pin_cipo,
 			pin_copi,
+			mut pin_irq,
 		) = cortex_m::interrupt::free(|cs| {
 			(
 				// uart_tx,
@@ -273,11 +276,21 @@ mod app {
 				},
 				// pin_copi,
 				gpioa.pa7.into_alternate_af0(cs),
+				// pin_irq
+				gpioa.pa8.into_push_pull_output(cs),
 			)
 		});
 
+		// Put host in reset
 		pin_sys_reset.set_low().unwrap();
+		// Turn the PSU off
 		pin_dc_on.set_low().unwrap();
+		// IRQ is active low; we have no need for service.
+		pin_irq.set_high().unwrap();
+		// Power LED is off
+		led_power.set_low().unwrap();
+		// Buzzer is off
+		_buzzer_pwm.set_low().unwrap();
 
 		defmt::info!("Creating UART...");
 
@@ -292,9 +305,6 @@ mod app {
 			(pin_sck, pin_cipo, pin_copi),
 			&mut rcc,
 		);
-
-		led_power.set_low().unwrap();
-		_buzzer_pwm.set_low().unwrap();
 
 		// Set EXTI15 to use PORT A (PA15) - button input
 		dp.SYSCFG.exticr4.modify(|_r, w| w.exti15().pa15());
@@ -348,6 +358,7 @@ mod app {
 			press_button_power_long: debouncr::debounce_16(false),
 			press_button_reset_short: debouncr::debounce_2(false),
 			rcc: Some(rcc),
+			pin_irq,
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -356,7 +367,7 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset], local = [rcc])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset], local = [rcc, pin_irq])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
@@ -366,7 +377,25 @@ mod app {
 		// Take this out of the `local` object to avoid sharing issues.
 		let mut rcc = ctx.local.rcc.take().unwrap();
 		defmt::info!("Idle is running...");
+		let mut irq_masked = true;
+		let mut is_high = false;
 		loop {
+			if !irq_masked && !register_state.ps2_kb_bytes.is_empty() {
+				// We need service
+				ctx.local.pin_irq.set_low().unwrap();
+				if is_high {
+					defmt::trace!("irq set");
+					is_high = false;
+				}
+			} else {
+				// We do not need service
+				ctx.local.pin_irq.set_high().unwrap();
+				if !is_high {
+					defmt::trace!("irq clear");
+					is_high = true;
+				}
+			}
+
 			match ctx.shared.msg_q_out.dequeue() {
 				Some(Message::Ps2Data0(word)) => {
 					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
@@ -392,11 +421,13 @@ mod app {
 							.state_dc_power_enabled
 							.lock(|r| *r = DcPowerState::Off);
 						// Stop any SPI stuff that's currently going on (the host is about to be powered off)
-						ctx.shared.spi.lock(|s| s.stop());
+						ctx.shared.spi.lock(|s| s.reset(&mut rcc));
 						// Put the host into reset
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
 						// Shut off the 5V power
 						ctx.shared.pin_dc_on.set_low().unwrap();
+						// Mask the IRQ to avoid back-powering the host
+						irq_masked = true;
 						// Start LED blinking again
 						led_power_blink::spawn().unwrap();
 					}
@@ -418,6 +449,8 @@ mod app {
 						// TODO: Take system out of reset when 3.3V and 5.0V are good
 						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
+						// Set 5 - unmask the IRQ
+						irq_masked = false;
 					}
 				}
 				Some(Message::PowerButtonRelease) => {
@@ -436,16 +469,20 @@ mod app {
 					// Is the board powered on? Don't do a reset if it's powered off.
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 						defmt::info!("Reset!");
-						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						// Step 1 - Stop any SPI stuff that's currently going on (the host is about to be reset)
 						ctx.shared.spi.lock(|s| s.reset(&mut rcc));
+						// Step 2 - Hold reset line (active) low
+						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
+						// Step 3 - Take it out of reset in a short while
 						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
 					}
 				}
 				Some(Message::SpiEnable) => {
 					if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
-						// Turn on the SPI peripheral
-						ctx.shared.spi.lock(|s| s.start());
+						// Turn on the SPI peripheral and expect four bytes (the
+						// length of a Request).
+						ctx.shared.spi.lock(|s| s.start(4));
 					} else {
 						// Ignore message - it'll be the CS line being pulled low when the host is powered off
 						defmt::info!("Ignoring spurious CS low");
@@ -456,12 +493,39 @@ mod app {
 					ctx.shared.spi.lock(|s| s.stop());
 					defmt::trace!("SPI Disable");
 				}
-				Some(Message::SpiRequest(req)) => {
-					process_command(req, &mut register_state, |rsp| {
-						ctx.shared.spi.lock(|spi| {
-							spi.set_transmit_sendable(rsp).unwrap();
-						});
+				Some(Message::SpiRx) => {
+					defmt::trace!("SpiRx");
+					// Look for something in the SPI bytes received buffer:
+					let mut req = None;
+					ctx.shared.spi.lock(|spi| {
+						if let Some((data, crc)) = spi.get_received() {
+							use proto::Receivable;
+							match proto::Request::from_bytes_with_crc(data, crc) {
+								Ok(inner_req) => {
+									defmt::trace!("Got packet");
+									req = Some(inner_req);
+								}
+								Err(proto::Error::BadLength) => {
+									// This is a programming bug. We said
+									// start(4) earlier, so there should be four
+									// bytes here.
+									panic!("Wanted 4, got {}", data.len());
+								}
+								Err(e) => {
+									defmt::warn!("Bad Req {:?} ({=[u8]:x}", e, data);
+								}
+							}
+						}
 					});
+
+					// If we got a valid message, queue it so we can look at it next time around
+					if let Some(req) = req {
+						process_command(req, &mut register_state, |rsp| {
+							ctx.shared.spi.lock(|spi| {
+								spi.set_transmit_sendable(rsp).unwrap();
+							});
+						});
+					}
 				}
 				Some(Message::UartByte(rx_byte)) => {
 					defmt::info!("UART RX {:?}", rx_byte);
@@ -470,44 +534,6 @@ mod app {
 				}
 				None => {
 					// No messages
-				}
-			}
-
-			// Look for something in the SPI bytes received buffer:
-			let mut req = None;
-			ctx.shared.spi.lock(|spi| {
-				let mut mark_done = false;
-				if let Some(data) = spi.get_received() {
-					use proto::Receivable;
-					match proto::Request::from_bytes(data) {
-						Ok(inner_req) => {
-							mark_done = true;
-							req = Some(inner_req);
-						}
-						Err(proto::Error::BadLength) => {
-							// Need more data
-						}
-						Err(e) => {
-							defmt::warn!("Bad Req {:?} ({=[u8]:x}", e, data);
-							mark_done = true;
-						}
-					}
-				}
-				if mark_done {
-					// Couldn't do this whilst holding the `data` ref.
-					spi.mark_done();
-				}
-			});
-
-			// If we got a valid message, queue it so we can look at it next time around
-			if let Some(req) = req {
-				if ctx
-					.shared
-					.msg_q_in
-					.lock(|q| q.enqueue(Message::SpiRequest(req)))
-					.is_err()
-				{
-					panic!("Q full!");
 				}
 			}
 			// TODO: Read ADC for 3.3V and 5.0V rails and check good
@@ -580,11 +606,12 @@ mod app {
 	///
 	/// It fires whenever there is new data received on SPI1. We should flag to the host
 	/// that data is available.
-	#[task(binds = SPI1, shared = [spi])]
+	#[task(binds = SPI1, shared = [spi, msg_q_in])]
 	fn spi1_interrupt(mut ctx: spi1_interrupt::Context) {
-		ctx.shared.spi.lock(|spi| {
-			spi.handle_isr();
-		});
+		let has_message = ctx.shared.spi.lock(|spi| spi.handle_isr());
+		if has_message {
+			let _ = ctx.shared.msg_q_in.lock(|q| q.enqueue(Message::SpiRx));
+		}
 	}
 
 	/// This is the LED blink task.
@@ -717,7 +744,7 @@ where
 		// A duplicate! Resend what we sent last time (so we don't affect FIFOs with a duplicate read).
 		let length = req.length_or_data as usize;
 		let rsp = proto::Response::new_ok_with_data(&register_state.scratch[0..length]);
-		defmt::warn!("Retry");
+		defmt::debug!("Detected a retry");
 		rsp_handler(&rsp);
 		return;
 	}
@@ -785,11 +812,4 @@ where
 	// defmt::debug!("Sent {:?}", rsp);
 }
 
-// TODO: Pins we haven't used yet
-// SPI pins
-// spi_clk: gpioa.pa5.into_alternate_af0(cs),
-// spi_cipo: gpioa.pa6.into_alternate_af0(cs),
-// spi_copi: gpioa.pa7.into_alternate_af0(cs),
-// I²C pins
-// i2c_scl: gpiob.pb6.into_alternate_af4(cs),
-// i2c_sda: gpiob.pb7.into_alternate_af4(cs),
+// End of file

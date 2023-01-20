@@ -27,7 +27,15 @@ pub trait Receivable<'a>: Sized {
 	/// Convert from received bytes.
 	///
 	/// You get `Err` if `data` is not long enough, or if there was a CRC error.
-	fn from_bytes(data: &'a [u8]) -> Result<Self, Error>;
+	fn from_bytes(data: &'a [u8]) -> Result<Self, Error> {
+		let crc = calculate_crc(data);
+		Self::from_bytes_with_crc(data, crc)
+	}
+
+	/// Convert from received bytes and a pre-calculated CRC.
+	///
+	/// You get `Err` if `data` is not long enough, or if there was a CRC error.
+	fn from_bytes_with_crc(data: &'a [u8], calc_crc: u8) -> Result<Self, Error>;
 }
 
 // ============================================================================
@@ -235,7 +243,25 @@ impl<'a> Receivable<'a> for Request {
 		if data.len() < 4 {
 			return Err(Error::BadLength);
 		}
-		let calc_crc = calculate_crc(&data[0..=3]);
+		Request::from_bytes_with_crc(data, calculate_crc(&data[0..=3]))
+	}
+
+	/// Convert from received bytes, when the CRC is pre-calculated.
+	///
+	/// Use this if you were calculating the CRC on-the-fly, e.g. with a
+	/// hardware CRC calculator.
+	///
+	/// You get `Err` if the bytes could not be decoded.
+	///
+	/// ```
+	/// # use neotron_bmc_protocol::{Request, Receivable};
+	/// let bytes = [0xC0, 0x11, 0x03, 0xC6];
+	/// let req = Request::from_bytes(&bytes).unwrap();
+	/// ```
+	fn from_bytes_with_crc(data: &'a [u8], calc_crc: u8) -> Result<Request, Error> {
+		if data.len() < 4 {
+			return Err(Error::BadLength);
+		}
 		if calc_crc != 0 {
 			// It's a quirk of CRC-8 that including the CRC always produces a
 			// result of zero.
@@ -321,8 +347,7 @@ impl<'a> Receivable<'a> for Response<'a> {
 	/// let req = Response::from_bytes(&bytes).unwrap();
 	///
 	/// ```
-	fn from_bytes(data: &'a [u8]) -> Result<Response<'a>, Error> {
-		let calc_crc = calculate_crc(&data[0..data.len()]);
+	fn from_bytes_with_crc(data: &'a [u8], calc_crc: u8) -> Result<Response<'a>, Error> {
 		if calc_crc != 0 {
 			// It's a quirk of CRC-8 that including the CRC always produces a
 			// result of zero.
@@ -407,22 +432,39 @@ impl Sendable for ProtocolVersion {
 	}
 }
 
-impl<'a> Receivable<'a> for ProtocolVersion {
-	fn from_bytes(data: &[u8]) -> Result<ProtocolVersion, Error> {
-		if data.len() < 3 {
-			return Err(Error::BadLength);
-		}
-		Ok(ProtocolVersion {
-			major: data[0],
-			minor: data[1],
-			patch: data[2],
-		})
-	}
-}
-
 // ============================================================================
 // Functions
 // ============================================================================
+
+/// An object for calculating CRC8 values on-the-fly.
+pub struct CrcCalc(u8);
+
+impl CrcCalc {
+	/// Make a new CRC calculator
+	pub const fn new() -> CrcCalc {
+		CrcCalc(crc::init())
+	}
+
+	/// Reset the CRC calculator
+	pub fn reset(&mut self) {
+		self.0 = crc::init();
+	}
+
+	/// Add one byte to the CRC calculator
+	pub fn add(&mut self, byte: u8) {
+		self.0 = crc::update(self.0, &[byte]);
+	}
+
+	/// Add several bytes to the CRC calculator
+	pub fn add_buffer(&mut self, bytes: &[u8]) {
+		self.0 = crc::update(self.0, bytes);
+	}
+
+	/// Get the CRC
+	pub fn get(&self) -> u8 {
+		crc::finalize(self.0)
+	}
+}
 
 /// Calculates the CRC-8 of the given bytes.
 ///
@@ -433,8 +475,9 @@ impl<'a> Receivable<'a> for ProtocolVersion {
 /// assert_eq!(calculate_crc(&[0xA0, 0x69]), 0x00);
 /// ```
 pub fn calculate_crc(data: &[u8]) -> u8 {
-	let crc = crc::update(crc::init(), data);
-	crc::finalize(crc)
+	let mut crc_calc = CrcCalc::new();
+	crc_calc.add_buffer(data);
+	crc_calc.get()
 }
 
 // ============================================================================

@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"rust-analyzer.linkedProjects": [
+			"./neotron-bmc-pico/Cargo.toml",
+			"./neotron-bmc-nucleo/Cargo.toml",
+			"./Cargo.toml"
+		]
+	 }
+}

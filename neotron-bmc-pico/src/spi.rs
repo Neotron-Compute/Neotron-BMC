@@ -12,15 +12,16 @@ pub struct SpiPeripheral<const RXC: usize, const TXC: usize> {
 	rx_buffer: [u8; RXC],
 	/// How many bytes have been received?
 	rx_idx: usize,
+	/// How many bytes do we want?
+	rx_want: usize,
 	/// A space for data we're about to send
 	tx_buffer: [u8; TXC],
 	/// How many bytes have been played from the TX buffer
 	tx_idx: usize,
 	/// How many bytes are loaded into the TX buffer
 	tx_ready: usize,
-	/// Has the RX been processed? If so, lie and say we don't have any data
-	/// (otherwise we process incoming messages multiple times).
-	is_done: bool,
+	/// The in-progress RX CRC
+	rx_crc: neotron_bmc_protocol::CrcCalc,
 }
 
 impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
@@ -50,10 +51,11 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			dev,
 			rx_buffer: [0u8; RXC],
 			rx_idx: 0,
+			rx_want: 0,
 			tx_buffer: [0u8; TXC],
 			tx_idx: 0,
 			tx_ready: 0,
-			is_done: false,
+			rx_crc: neotron_bmc_protocol::CrcCalc::new(),
 		};
 
 		spi.config(Self::MODE);
@@ -65,11 +67,6 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 
 		// Enable the SPI device
 		spi.stop();
-		spi.dev.cr1.write(|w| {
-			// Enable the peripheral
-			w.spe().enabled();
-			w
-		});
 
 		spi
 	}
@@ -130,12 +127,11 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			// 3f. Disable DMA mode
 			w.txdmaen().disabled();
 			w.rxdmaen().disabled();
-			// Extra: Turn on RX and Error interrupts, but not TX. The TX
-			// interrupt is turned off because we deliberately underflow the
-			// FIFO during the receive phase of the transaction.
-			w.rxneie().not_masked();
+			// Extra: Turn on RX and Error interrupts, but not TX. We swap
+			// interrupts once the read phase is complete.
+			w.rxneie().masked();
 			w.txeie().masked();
-			w.errie().not_masked();
+			w.errie().masked();
 			w
 		});
 
@@ -144,18 +140,33 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		// 5. DMA registers - not required
 	}
 
-	/// Enable the SPI peripheral (i.e. when CS goes low)
-	pub fn start(&mut self) {
+	/// Enable the SPI peripheral (i.e. when CS goes low).
+	///
+	/// We tell it how many bytes we are expecting, so it knows when to update
+	/// the main thread.
+	pub fn start(&mut self, num_bytes: usize) {
+		if num_bytes > RXC {
+			panic!("Read too large");
+		}
 		self.rx_idx = 0;
+		self.rx_want = num_bytes as usize;
 		self.tx_idx = 0;
 		self.tx_ready = 0;
-		self.is_done = false;
+		self.rx_crc.reset();
 		// Empty the receive register
 		while self.has_rx_data() {
 			let _ = self.raw_read();
 		}
+		// Turn on RX interrupt; turn off TX interrupt
+		self.dev.cr2.write(|w| {
+			w.rxneie().not_masked();
+			w.txeie().masked();
+			w
+		});
+		// Tell the SPI engine it has a chip-select
 		self.dev.cr1.modify(|_r, w| {
 			w.ssi().slave_selected();
+			w.spe().enabled();
 			w
 		});
 	}
@@ -164,11 +175,15 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	pub fn stop(&mut self) {
 		self.dev.cr1.modify(|_r, w| {
 			w.ssi().slave_not_selected();
+			w.spe().disabled();
 			w
 		});
 	}
 
 	/// Fully reset the SPI peripheral
+	///
+	/// This is like calling [`Self::stop()`] but it reboots the IP block to clear any
+	/// partial words from the RX FIFO.
 	pub fn reset(&mut self, _rcc: &mut stm32f0xx_hal::rcc::Rcc) {
 		self.dev.cr1.write(|w| {
 			// Disable the peripheral
@@ -194,13 +209,8 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			let _ = self.raw_read();
 		}
 
-		// Enable the SPI device and leave it idle
+		// Leave the SPI device turned off
 		self.stop();
-		self.dev.cr1.write(|w| {
-			// Enable the peripheral
-			w.spe().enabled();
-			w
-		});
 	}
 
 	/// Does the RX FIFO have any data in it?
@@ -221,37 +231,46 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	}
 
 	/// Get a slice of data received so far.
-	pub fn get_received(&self) -> Option<&[u8]> {
-		if !self.is_done {
-			Some(&self.rx_buffer[0..self.rx_idx])
-		} else {
-			None
-		}
+	pub fn get_received(&self) -> Option<(&[u8], u8)> {
+		Some(((&self.rx_buffer[0..self.rx_idx]), self.rx_crc.get()))
 	}
 
-	/// Mark the RX as processed, so we don't do it again (until the SPI is
-	/// disabled and re-enabled by the next chip select).
-	pub fn mark_done(&mut self) {
-		self.is_done = true;
-	}
-
-	pub fn handle_isr(&mut self) {
+	/// Call this when the SPI peripheral interrupt fires.
+	///
+	/// It will handle incoming bytes and/or outgoing bytes, depending on what
+	/// phase we are in.
+	pub fn handle_isr(&mut self) -> bool {
+		let mut have_packet = false;
 		let irq_status = self.dev.sr.read();
 		if irq_status.rxne().is_not_empty() {
-			self.rx_isr();
+			if self.rx_isr() {
+				// We've got enough, turn the RX interrupt off. Everything else
+				// we receive is going to be garbage.
+				self.dev.cr2.write(|w| {
+					w.rxneie().masked();
+					w
+				});
+				have_packet = true;
+			}
 		}
 		if irq_status.txe().is_empty() {
 			self.tx_isr();
 		}
+		have_packet
 	}
 
 	/// Try and read from the SPI FIFO
-	fn rx_isr(&mut self) {
-		let cmd = self.raw_read();
+	fn rx_isr(&mut self) -> bool {
+		let byte = self.raw_read();
+		if self.rx_want == 0 {
+			panic!("unwanted data 0x{:02x}", byte);
+		}
 		if self.rx_idx < self.rx_buffer.len() {
-			self.rx_buffer[self.rx_idx] = cmd;
+			self.rx_buffer[self.rx_idx] = byte;
+			self.rx_crc.add(byte);
 			self.rx_idx += 1;
 		}
+		self.rx_idx == self.rx_want
 	}
 
 	/// Call this in the TXEIE interrupt. It will load the SPI FIFO with some
@@ -264,28 +283,9 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 			self.raw_write(next_tx);
 			self.tx_idx += 1;
 		} else {
-			// No data - send nothing
+			// No data - send 0x00
+			self.raw_write(0x00);
 		}
-	}
-
-	/// Load some data into the TX buffer.
-	///
-	/// You get an error if you try to load too much.
-	pub fn set_transmit(&mut self, data: &[u8]) -> Result<(), usize> {
-		self.tx_ready = 0;
-		self.tx_idx = 0;
-		if data.len() > TXC {
-			// Too much data. This check is important for safety in
-			// [`Self::tx_isr`].
-			return Err(TXC);
-		}
-		for (inc, space) in data.iter().zip(self.tx_buffer.iter_mut()) {
-			*space = *inc;
-		}
-		// We must never set this to be longer than `TXC` as we do an unchecked
-		// read from `self.tx_buffer` in [`Self::tx_isr`].
-		self.tx_ready = data.len();
-		Ok(())
 	}
 
 	/// Render some message into the TX buffer.
@@ -298,11 +298,19 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		self.tx_ready = 0;
 		self.tx_idx = 0;
 
-		match message.render_to_buffer(&mut self.tx_buffer) {
+		// SPI FIFO seems to corrupt the first byte we load. So load a dummy one
+		// we don't care about.
+		self.tx_buffer[0] = 0xFF;
+		match message.render_to_buffer(&mut self.tx_buffer[1..]) {
 			Ok(n) => {
 				// We must never set this to be longer than `TXC` as we do an
 				// unchecked read from `self.tx_buffer` in [`Self::tx_isr`].
-				self.tx_ready = n.min(TXC);
+				self.tx_ready = (n + 1).min(TXC);
+				// Turn on the TX interrupt
+				self.dev.cr2.write(|w| {
+					w.txeie().not_masked();
+					w
+				});
 				Ok(())
 			}
 			Err(_) => Err(()),
