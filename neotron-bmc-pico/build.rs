@@ -28,7 +28,7 @@ fn main() {
 	let mut output = version_output.stdout;
 	output.pop();
 
-	if output.len() > 32 {
+	if output.len() >= 32 {
 		panic!("Version too long!");
 	}
 

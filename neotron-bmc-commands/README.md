@@ -57,9 +57,9 @@ The three bytes are `major`, `minor` and `patch`. This document corresponds to
 ### Address 0x01 - Firmware Version
 
 This read-only register returns the firmware version of the NBMC, as a UTF-8
-string. The register length is always 64 bytes, and the string is null-padded.
+string. The register length is always 32 bytes, and the string is null-padded.
 We also guarantee that the firmware version will always be less than or equal to
-63 bytes, so you can also treat this string as null-terminated.
+31 bytes, so you can also treat this string as null-terminated.
 
 An official release will have a version string of the form `tags/v1.2.3`. An
 unofficial release might be `heads/develop-dirty`. It is not recommended that
