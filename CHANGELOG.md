@@ -4,6 +4,12 @@
 
 * None
 
+## v0.5.1
+
+* Adds a PC speaker driver using TIM14
+* Plays a beep on startup
+* Lets the host play beeps using the SPI interface
+
 ## v0.5.0
 
 * Generates Host Interrupts
