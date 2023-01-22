@@ -134,6 +134,19 @@ pub struct ProtocolVersion {
 // Impls
 // ============================================================================
 
+impl RequestType {
+	/// Converts an 'alt' command into a regular command.
+	///
+	/// Once you've checked for duplicates, you don't care which you've got.
+	pub fn flatten(self) -> Self {
+		match self {
+			RequestType::LongWrite | RequestType::LongWriteAlt => RequestType::LongWrite,
+			RequestType::ShortWrite | RequestType::ShortWriteAlt => RequestType::ShortWrite,
+			RequestType::Read | RequestType::ReadAlt => RequestType::Read,
+		}
+	}
+}
+
 impl Request {
 	/// Make a new Read Request, requesting the given register and number of
 	/// bytes.

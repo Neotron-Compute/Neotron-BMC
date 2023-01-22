@@ -2,7 +2,7 @@
 
 ## Unreleased Changes
 
-* None
+* Handle 'Alt' reads and writes.
 
 ## v0.5.1
 
