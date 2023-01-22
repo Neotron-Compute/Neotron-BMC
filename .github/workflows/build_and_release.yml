@@ -1,15 +1,19 @@
 on: [push, pull_request]
 name: Build (and Release)
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
     name: Build (and Release)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v3
         with:
           submodules: true
+          fetch-depth: 0
 
       - name: Add targets
         run: |
@@ -27,24 +31,6 @@ jobs:
 
       - name: Build neotron-bmc-nucleo
         run: cd neotron-bmc-nucleo && DEFMT_LOG=info cargo build --release --verbose --target=thumbv7em-none-eabihf
-
-      - name: Get Branch Name
-        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
-        id: branch_name
-        run: |
-          echo ::set-output name=SOURCE_TAG::${GITHUB_REF#refs/tags/}
-
-      - name: Create Release
-        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ steps.branch_name.outputs.SOURCE_TAG }}
-          draft: false
-          prerelease: false
 
       - name: Upload files to Release
         if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
