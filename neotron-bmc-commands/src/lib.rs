@@ -156,5 +156,5 @@ pub enum Command {
 	/// Speaker Duty cycle, in 1/255
 	/// * Length: 1
 	/// * Mode: R/W
-	SpeakerDutyCycle = 0x73
+	SpeakerDutyCycle = 0x73,
 }
