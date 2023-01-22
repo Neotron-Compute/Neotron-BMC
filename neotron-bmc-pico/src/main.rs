@@ -825,9 +825,8 @@ where
 	let mut data = [0u8; 1];
 
 	// What do they want?
-	let rsp = match (req.request_type, Command::try_from(req.register)) {
-		(proto::RequestType::Read, Ok(Command::ProtocolVersion))
-		| (proto::RequestType::ReadAlt, Ok(Command::ProtocolVersion)) => {
+	let rsp = match (req.request_type.flatten(), Command::try_from(req.register)) {
+		(proto::RequestType::Read, Ok(Command::ProtocolVersion)) => {
 			defmt::trace!("Reading ProtocolVersion");
 			// They want the Protocol Version we support. Give them v0.1.1.
 			let length = req.length_or_data as usize;
@@ -838,8 +837,7 @@ where
 				proto::Response::new_without_data(proto::ResponseResult::BadLength)
 			}
 		}
-		(proto::RequestType::Read, Ok(Command::FirmwareVersion))
-		| (proto::RequestType::ReadAlt, Ok(Command::FirmwareVersion)) => {
+		(proto::RequestType::Read, Ok(Command::FirmwareVersion)) => {
 			defmt::trace!("Reading FirmwareVersion");
 			// They want the Firmware Version string.
 			let length = req.length_or_data as usize;
@@ -851,8 +849,7 @@ where
 				proto::Response::new_without_data(proto::ResponseResult::BadLength)
 			}
 		}
-		(proto::RequestType::Read, Ok(Command::Ps2KbBuffer))
-		| (proto::RequestType::ReadAlt, Ok(Command::Ps2KbBuffer)) => {
+		(proto::RequestType::Read, Ok(Command::Ps2KbBuffer)) => {
 			defmt::trace!("Reading Ps2KbBuffer");
 			let length = req.length_or_data as usize;
 			if length > 0 && length <= register_state.scratch.len() {
@@ -882,6 +879,7 @@ where
 		}
 		(proto::RequestType::ShortWrite, Ok(Command::SpeakerDuration)) => {
 			defmt::debug!("Writing speaker duration ({})", req.length_or_data);
+			// This update actually causes the speaker to beep
 			register_state
 				.speaker
 				.set_duration(req.length_or_data as u16 * 10);
@@ -919,6 +917,11 @@ where
 		}
 		_ => {
 			// Sorry, that register / request type is not supported
+			defmt::warn!(
+				"Unknown register operation {:?} on 0x{:02x}",
+				req.request_type,
+				req.register
+			);
 			proto::Response::new_without_data(proto::ResponseResult::BadRegister)
 		}
 	};
