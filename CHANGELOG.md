@@ -4,6 +4,10 @@
 
 * None
 
+## v0.5.2
+
+* Handle 'Alt' reads and writes.
+
 ## v0.5.1
 
 * Adds a PC speaker driver using TIM14

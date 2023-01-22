@@ -211,16 +211,20 @@ TODO
 
 ### Address 0x70 - Speaker Tone Duration
 
-TODO
+Sets the duration of the tone to be played, and starts the tone playing. You
+should set the other three registers (if required) before setting this register.
+
+There is no way to know when the tone is ended; the host should keep track of
+the duration it set and wait the appropriate period of time.
 
 ### Address 0x71 - Speaker Tone Period (High)
 
-TODO
+Sets the upper 8 bits of the tone period. This is the inverse of frequency, in 48 kHz units.
 
 ### Address 0x72 - Speaker Tone Period (Low)
 
-TODO
+Sets the lower 8 bits of the tone period. See *Speaker Tone Period (High)* for details.
 
 ### Address 0x73 - Speaker Tone Duty Cycle
 
-TODO
+Sets the duty-cycle of the speaker tone. A value of 127 is 50:50 (a square wave).
