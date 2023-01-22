@@ -44,7 +44,7 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 		// It also checks the pins are OK.
 		let spi_controller =
 			stm32f0xx_hal::spi::Spi::spi1(dev, pins, Self::MODE, 8_000_000u32.hz(), rcc);
-		// Now disassemble the driver so we can set it into Controller mode instead
+		// Now disassemble the driver so we can set it into Peripheral mode instead
 		let (dev, _pins) = spi_controller.release();
 
 		let mut spi = SpiPeripheral {

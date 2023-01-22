@@ -26,7 +26,7 @@ The MCU has:
 | 12   | PA6  | SPI1_CIPO   | SPI Data Output                              |
 | 13   | PA7  | SPI1_COPI   | SPI Data Input                               |
 | 14   | PB0  | LED         | Output for Power LED                         |
-| 15   | PB1  | BUZZER      | PWM Output for Buzzer                        |
+| 15   | PB1  | SPEAKER     | PWM Output for Speaker                       |
 | 18   | PA8  | IRQ_nHOST   | Interrupt Output to the Host (active low)    |
 | 19   | PA9  | USART1_TX   | UART Transmit Output                         |
 | 20   | PA10 | USART1_RX   | UART Receive Input                           |
@@ -55,6 +55,10 @@ This design should also be pin-compatible with the following SoCs (although this
 * STM32L082KZTx
 
 Note that not all STM32 pins are 5V-tolerant, and the PS/2 protocol is a 5V open-collector system, so ensure that whichever part you pick has 5V-tolerant pins (marked `FT` or `FTt` in the datasheet) for the PS/2 signals. All of the parts above _should_ be OK, but they haven't been tested. Let us know if you try one!
+
+## SPI Communications Protocol
+
+The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on rising edge) at 1 MHz (higher speeds TBD). It uses frames made up of 8-bit words.
 
 ## Build Requirements
 

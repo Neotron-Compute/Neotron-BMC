@@ -7,6 +7,7 @@ use panic_probe as _;
 use stm32f0xx_hal as _; // memory layout // panic handler
 
 pub mod ps2;
+pub mod speaker;
 pub mod spi;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
