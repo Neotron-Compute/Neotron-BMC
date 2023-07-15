@@ -22,8 +22,8 @@ line and a dedicated IRQ line. It provides to the system:
 * two analog inputs for monitoring for the 3.3V and 5.0V rails,
 * two GPIO inputs for a power button and a reset button, and
 * three GPIO outputs - nominally used for
-    * the main DC/DC enable signal, and
-    * the power LED
+  * the main DC/DC enable signal, and
+  * the power LED
 
 ## Hardware Interface
 
@@ -57,7 +57,7 @@ Build requirements are available for
 
 ## Licence
 
-This code is licenced under the GNU Public Licence version 3. See:
+This repository as a whole is licenced under the GNU Public Licence version 3. See:
 
 * [The LICENSE file](./LICENSE)
 * [The GPL Website](http://www.gnu.org/licenses/gpl-3.0.html)
@@ -86,4 +86,7 @@ firmware (or products that contain it):
 Note that this firmware image incorporates a number of third-party modules. You
 should review the output of `cargo tree` and ensure that any licence terms for
 those modules are upheld. You should also be aware that this application was
-based on the Knurling Template at https://github.com/knurling-rs/app-template.
+based on the Knurling Template at <https://github.com/knurling-rs/app-template>.
+
+Note also that some crates within this tree are made available individually
+under different licences. See each individual crate for details.

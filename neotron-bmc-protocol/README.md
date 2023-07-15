@@ -1,6 +1,7 @@
 # Neotron-BMC-Protocol
 
-Protocol code for communication with the Neotron Board Management Controller (NBMC).
+The SPI protocol for communication with the Neotron Board Management Controller
+(NBMC).
 
 ## Introduction
 
@@ -13,7 +14,7 @@ soft power button, and it also ensures that all power rails come up before the
 system is taken out of reset.
 
 The NBMC sits on the SPI bus, receives *Requests* and sends *Responses* in
-reply. It can also raise an IRQ line.
+reply. It can also activate an IRQ line.
 
 This crate describes the protocol run over the SPI bus and provides some basic
 helper code for implementing the protocol in Rust.
@@ -66,7 +67,7 @@ the `nCS` signal in-between.
 
 * `0xC0`: Read
 * `0xC1`: Read (alternate)
-* `0xC2`: Short Write 
+* `0xC2`: Short Write
 * `0xC3`: Long Write
 
 ### Response Results

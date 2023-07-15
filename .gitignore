@@ -1,4 +1,5 @@
 */target
 target/
-*Cargo.lock*
-*/Cargo.lock
+/Cargo.lock
+/neotron-bmc-protocol/Cargo.lock
+/neotron-bmc-command/Cargo.lock
