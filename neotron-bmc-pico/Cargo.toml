@@ -1,8 +1,11 @@
 [package]
 authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
-name = "neotron-bmc-pico"
+description = "Neotron BMC firmware to run on the STM32F030 on the Neotron Pico"
 edition = "2018"
-version = "0.5.2"
+license = "GPL-3.0-or-later"
+name = "neotron-bmc-pico"
+readme = "README.md"
+version = "0.5.3"
 
 [dependencies]
 cortex-m = { version = "0.7.5", features = ["inline-asm", "critical-section-single-core"] }
