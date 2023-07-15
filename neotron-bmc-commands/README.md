@@ -217,14 +217,27 @@ should set the other three registers (if required) before setting this register.
 There is no way to know when the tone is ended; the host should keep track of
 the duration it set and wait the appropriate period of time.
 
-### Address 0x71 - Speaker Tone Period (High)
-
-Sets the upper 8 bits of the tone period. This is the inverse of frequency, in 48 kHz units.
-
-### Address 0x72 - Speaker Tone Period (Low)
+### Address 0x71 - Speaker Tone Period (Low)
 
 Sets the lower 8 bits of the tone period. See *Speaker Tone Period (High)* for details.
+
+### Address 0x72 - Speaker Tone Period (High)
+
+Sets the upper 8 bits of the tone period. This is the inverse of frequency, in
+48 kHz units. A value of `48000 / 440 = 109 = 0x006D` will give you a
+Concert-pitch A (440 Hz). Write that value as `0x00` in the high register and
+`0x6D` in the low register.
 
 ### Address 0x73 - Speaker Tone Duty Cycle
 
 Sets the duty-cycle of the speaker tone. A value of 127 is 50:50 (a square wave).
+
+## Licence
+
+This code is licenced under the Blue Oak Model License 1.0.0. See:
+
+* [The LICENSE file](./LICENSE)
+* [The Blue Oak Licence Website](https://blueoakcouncil.org/license/1.0.0)
+
+Our intent behind picking this licence is to allow this code to be freely
+reused, both in open-source and commercially licensed products.
