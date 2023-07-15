@@ -4,6 +4,14 @@
 
 * None
 
+## v0.5.4
+
+* Actually fix the speaker period register write bug (and put neotron-bmc-commands back)
+
+## v0.5.3
+
+* Fix the speaker period register write bug by swapping the bytes in neotron-bmc-commands
+
 ## v0.5.2
 
 * Handle 'Alt' reads and writes.
