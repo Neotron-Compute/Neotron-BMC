@@ -15,3 +15,5 @@ jobs:
       run: cd neotron-bmc-nucleo && cargo fmt -- --check
     - name: Check format neotron-bmc-protocol
       run: cd neotron-bmc-protocol && cargo fmt -- --check
+    - name: Check format neotron-bmc-commands
+      run: cd neotron-bmc-commands && cargo fmt -- --check

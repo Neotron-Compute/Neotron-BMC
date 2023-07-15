@@ -12,7 +12,6 @@ The MCU has:
 * 4 KiB SRAM
 * LQFP-32 package (0.8mm pitch)
 
-
 | Pin  | Name | Signal      | Function                                     |
 | :--- | :--- | :---------- | :------------------------------------------- |
 | 02   | PF0  | BUTTON_nPWR | Power Button Input (active low)              |
@@ -41,7 +40,7 @@ The MCU has:
 | 29   | PB6  | I2C1_SCL    | I²C Clock                                    |
 | 30   | PB7  | I2C1_SDA    | I²C Data                                     |
 
-Note that in the above table, the UART signals are wired as _Data Terminal Equipment (DTE)_ (i.e. like a PC, not like a Modem). Connect the NMBC *UART Transmit Output* pin to the *Input* pin of something like an FTDI TTL-232R-3V3 cable.
+Note that in the above table, the UART signals are wired as *Data Terminal Equipment (DTE)* (i.e. like a PC, not like a Modem). Connect the NMBC *UART Transmit Output* pin to the *Input* pin of something like an FTDI TTL-232R-3V3 cable.
 
 This design should also be pin-compatible with the following SoCs (although this firmware may need changes):
 
@@ -63,28 +62,33 @@ The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on risi
 ## Build Requirements
 
 1. `rustup` and Rust
-   - see https://www.rust-lang.org
+   * see https://www.rust-lang.org
 2. The `thumbv6m-none-eabi` target
-   - run `rustup target add thumbv6m-none-eabi`
+   * run `rustup target add thumbv6m-none-eabi`
 3. `probe-run`
-   - run `cargo install probe-run`
+   * run `cargo install probe-run`
 4. `flip-link`
-   - run `cargo install flip-link`
+   * run `cargo install flip-link`
 
 Then to build and flash for an STM32F031K6T6, connect a probe supported by probe-rs (such as a SEGGER J-Link, or an ST-Link) and run:
 
-```
-$ DEFMT_LOG=info cargo run --release
+```console
+DEFMT_LOG=info cargo run --release
 ```
 
 You should see logging messages from the board on your terminal. To increase the logging level, try:
 
 Then to build and flash, connect a probe supported by probe-rs (such as a SEGGER J-Link, or an ST-Link) and run:
 
-```
-$ DEFMT_LOG=debug cargo run --release
+```console
+DEFMT_LOG=debug cargo run --release
 ```
 
 ## Licence
 
-This source code as a whole is licensed under the GPL v3. Third-party crates are covered by their respective licences.
+This crate as a whole is licenced under the GNU Public Licence version 3. See:
+
+* [The LICENSE file](../LICENSE)
+* [The GPL Website](http://www.gnu.org/licenses/gpl-3.0.html)
+
+The [top level README file](../README.md) has more information about this choice of license.
