@@ -37,7 +37,7 @@ impl RegisterState {
 	}
 
 	pub fn set_period_high(&mut self, period_high: u8) {
-		self.period = (self.period & 0xff00) | period_high as u16;
+		self.period = (self.period & 0x00ff) | ((period_high as u16) << 8);
 	}
 
 	pub fn period_low(&self) -> u8 {
@@ -45,7 +45,7 @@ impl RegisterState {
 	}
 
 	pub fn set_period_low(&mut self, period_low: u8) {
-		self.period = (self.period() & 0xff) | ((period_low as u16) << 8);
+		self.period = (self.period & 0xff00) | period_low as u16;
 	}
 
 	pub fn duration(&self) -> u16 {

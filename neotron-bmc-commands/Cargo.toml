@@ -4,7 +4,7 @@ edition = "2021"
 license = "BlueOak-1.0.0"
 name = "neotron-bmc-commands"
 repository = "https://github.com/neotron-compute/neotron-bmc"
-version = "0.1.0"
+version = "0.2.0"
 homepage = "https://github.com/neotron-compute"
 readme = "README.md"
 
