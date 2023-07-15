@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "neotron-bmc-pico"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "cortex-m",
  "cortex-m-rtic",

@@ -36,11 +36,19 @@ jobs:
         run: cd neotron-bmc-nucleo && DEFMT_LOG=info cargo build --release --verbose --target=thumbv7em-none-eabihf
 
       - name: Upload files to Release
-        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/pico-')
         uses: softprops/action-gh-release@v1
         with:
           files: |
             neotron-bmc-pico/target/thumbv6m-none-eabi/release/neotron-bmc-pico
-            neotron-bmc-nucleo/target/thumbv7em-none-eabihf/release/neotron-bmc-nucleo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload files to Release
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/nucleo-')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            neotron-bmc-nucleo/target/thumbv6m-none-eabi/release/neotron-bmc-nucleo
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
