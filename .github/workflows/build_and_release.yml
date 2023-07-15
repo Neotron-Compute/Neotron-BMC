@@ -26,6 +26,9 @@ jobs:
       - name: Build/Test neotron-bmc-protocol
         run: cd neotron-bmc-protocol && cargo test
 
+      - name: Build/Test neotron-bmc-commands
+        run: cd neotron-bmc-commands && cargo test
+
       - name: Build neotron-bmc-pico
         run: cd neotron-bmc-pico && DEFMT_LOG=info cargo build --release --verbose --target=thumbv6m-none-eabi
 

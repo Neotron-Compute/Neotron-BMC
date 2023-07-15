@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-
 #![no_std]
 
 #[derive(Debug, Copy, Clone, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
