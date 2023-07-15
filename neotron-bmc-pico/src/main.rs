@@ -382,10 +382,10 @@ mod app {
 		// Take this out of the `local` object to avoid sharing issues.
 		let mut rcc = ctx.local.rcc.take().unwrap();
 		defmt::info!("Idle is running...");
-		let mut irq_masked = true;
+		let mut irq_forced_low = true;
 		let mut is_high = false;
 		loop {
-			if !irq_masked && !register_state.ps2_kb_bytes.is_empty() {
+			if irq_forced_low || !register_state.ps2_kb_bytes.is_empty() {
 				// We need service
 				ctx.local.pin_irq.set_low().unwrap();
 				if is_high {
@@ -432,7 +432,7 @@ mod app {
 						// Shut off the 5V power
 						ctx.shared.pin_dc_on.set_low().unwrap();
 						// Mask the IRQ to avoid back-powering the host
-						irq_masked = true;
+						irq_forced_low = true;
 						// Start LED blinking again
 						led_power_blink::spawn().unwrap();
 					}
@@ -458,7 +458,7 @@ mod app {
 						// Returns an error if it's already scheduled (but we don't care)
 						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
 						// Set 6 - unmask the IRQ
-						irq_masked = false;
+						irq_forced_low = false;
 					}
 				}
 				Some(Message::PowerButtonRelease) => {
