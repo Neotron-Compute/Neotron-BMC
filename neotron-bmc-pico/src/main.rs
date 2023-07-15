@@ -892,7 +892,7 @@ where
 		}
 		(proto::RequestType::ShortWrite, Ok(Command::SpeakerPeriodHigh)) => {
 			defmt::debug!("Writing speaker period (high = {})", req.length_or_data);
-			register_state.speaker.set_period_low(req.length_or_data);
+			register_state.speaker.set_period_high(req.length_or_data);
 			proto::Response::new_without_data(proto::ResponseResult::Ok)
 		}
 		(proto::RequestType::Read, Ok(Command::SpeakerPeriodLow)) => {
@@ -902,7 +902,7 @@ where
 		}
 		(proto::RequestType::ShortWrite, Ok(Command::SpeakerPeriodLow)) => {
 			defmt::debug!("Writing speaker period (low = {})", req.length_or_data);
-			register_state.speaker.set_period_high(req.length_or_data);
+			register_state.speaker.set_period_low(req.length_or_data);
 			proto::Response::new_without_data(proto::ResponseResult::Ok)
 		}
 		(proto::RequestType::Read, Ok(Command::SpeakerDutyCycle)) => {
