@@ -231,3 +231,13 @@ Concert-pitch A (440 Hz). Write that value as `0x00` in the high register and
 ### Address 0x73 - Speaker Tone Duty Cycle
 
 Sets the duty-cycle of the speaker tone. A value of 127 is 50:50 (a square wave).
+
+## Licence
+
+This code is licenced under the Blue Oak Model License 1.0.0. See:
+
+* [The LICENSE file](./LICENSE)
+* [The Blue Oak Licence Website](https://blueoakcouncil.org/license/1.0.0)
+
+Our intent behind picking this licence is to allow this code to be freely
+reused, both in open-source and commercially licensed products.
