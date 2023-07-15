@@ -1,9 +1,13 @@
 [package]
-name = "neotron-bmc-commands"
-version = "0.1.0"
+description = "Commands that are supported by the Neotron BMC"
 edition = "2021"
+license = "BlueOak-1.0.0"
+name = "neotron-bmc-commands"
+repository = "https://github.com/neotron-compute/neotron-bmc"
+version = "0.1.0"
+homepage = "https://github.com/neotron-compute"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-num_enum = { version = "0.5", default-features=false }
+num_enum = { version = "0.5", default-features = false }
