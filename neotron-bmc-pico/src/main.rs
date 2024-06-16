@@ -75,6 +75,8 @@ mod app {
 	use super::*;
 	use systick_monotonic::*; // Implements the `Monotonic` trait
 
+	defmt::timestamp!("{=u64}", monotonics::now().ticks());
+
 	pub enum Message {
 		/// Word from PS/2 port 0
 		Ps2Data0(u16),
