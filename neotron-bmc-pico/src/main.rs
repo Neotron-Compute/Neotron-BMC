@@ -19,7 +19,7 @@ use stm32f0xx_hal::{
 	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
 	gpio::gpiob::{PB0, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
-	gpio::{Alternate, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
+	gpio::{Alternate, Floating, Input, OpenDrain, Output, PullDown, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
 	rcc, serial,
@@ -100,6 +100,50 @@ mod app {
 		SpeakerDisable,
 	}
 
+	enum Ps2Clk0Pin {
+		/// We are receiving data from the keyboard
+		Input(PA15<Input<Floating>>),
+		/// We are sending data to the keyboard
+		Output(PA15<Output<OpenDrain>>),
+		/// A temporary state
+		Neither,
+	}
+
+	enum Ps2Data0Pin {
+		/// Data pin is in input mode
+		Input(PB4<Input<Floating>>),
+		/// Data pin is in output mode.
+		///
+		/// Every clock edge shifts out a bit, until the value is all zeroes.
+		Output(PB4<Output<OpenDrain>>, u16),
+		/// We are skipping the acknowledge bit
+		Skip(PB4<Input<Floating>>),
+		/// A temporary state
+		Neither,
+	}
+
+	enum Ps2Clk1Pin {
+		/// We are receiving data from the keyboard
+		Input(PB3<Input<Floating>>),
+		/// We are sending data to the keyboard
+		Output(PB3<Output<OpenDrain>>),
+		/// A temporary state
+		Neither,
+	}
+
+	enum Ps2Data1Pin {
+		/// Data pin is in input mode
+		Input(PB5<Input<Floating>>),
+		/// Data pin is in output mode.
+		///
+		/// Every clock edge shifts out a bit, until the value is all zeroes.
+		Output(PB5<Output<OpenDrain>>, u16),
+		/// We are skipping the acknowledge bit
+		Skip(PB5<Input<Floating>>),
+		/// A temporary state
+		Neither,
+	}
+
 	#[shared]
 	struct Shared {
 		/// The power LED (D1101)
@@ -132,16 +176,16 @@ mod app {
 		pin_sys_reset: PA2<Output<PushPull>>,
 		/// Clock pin for PS/2 Keyboard port
 		#[lock_free]
-		ps2_clk0: PA15<Input<Floating>>,
+		ps2_clk0: Ps2Clk0Pin,
 		/// Clock pin for PS/2 Mouse port
 		#[lock_free]
-		_ps2_clk1: PB3<Input<Floating>>,
+		ps2_clk1: Ps2Clk1Pin,
 		/// Data pin for PS/2 Keyboard port
 		#[lock_free]
-		ps2_dat0: PB4<Input<Floating>>,
+		ps2_dat0: Ps2Data0Pin,
 		/// Data pin for PS/2 Mouse port
 		#[lock_free]
-		_ps2_dat1: PB5<Input<Floating>>,
+		ps2_dat1: Ps2Data1Pin,
 		/// The external interrupt peripheral
 		#[lock_free]
 		exti: pac::EXTI,
@@ -154,8 +198,10 @@ mod app {
 		spi: neotron_bmc_pico::spi::SpiPeripheral<5, 64>,
 		/// CS pin
 		pin_cs: PA4<Input<PullDown>>,
-		/// Keyboard PS/2 decoder
+		/// Keyboard PS/2 interface
 		kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder,
+		/// Mouse PS/2 interface
+		mouse_decoder: neotron_bmc_pico::ps2::Ps2Decoder,
 	}
 
 	#[local]
@@ -228,9 +274,9 @@ mod app {
 			mut pin_dc_on,
 			mut pin_sys_reset,
 			ps2_clk0,
-			_ps2_clk1,
+			ps2_clk1,
 			ps2_dat0,
-			_ps2_dat1,
+			ps2_dat1,
 			pin_cs,
 			pin_sck,
 			pin_cipo,
@@ -260,11 +306,11 @@ mod app {
 				gpioa.pa2.into_push_pull_output(cs),
 				// ps2_clk0,
 				gpioa.pa15.into_floating_input(cs),
-				// _ps2_clk1,
+				// ps2_clk1,
 				gpiob.pb3.into_floating_input(cs),
 				// ps2_dat0,
 				gpiob.pb4.into_floating_input(cs),
-				// _ps2_dat1,
+				// ps2_dat1,
 				gpiob.pb5.into_floating_input(cs),
 				// pin_cs,
 				gpioa.pa4.into_pull_down_input(cs),
@@ -311,7 +357,7 @@ mod app {
 
 		speaker::RegisterState::default().setup(&mut rcc, &dp.TIM14);
 
-		// Set EXTI15 to use PORT A (PA15) - button input
+		// Set EXTI15 to use PORT A (PA15) - ps2_clk0
 		dp.SYSCFG.exticr4.modify(|_r, w| w.exti15().pa15());
 
 		// Enable EXTI15 interrupt as external falling edge
@@ -327,6 +373,14 @@ mod app {
 		dp.EXTI.emr.modify(|_r, w| w.mr4().set_bit());
 		dp.EXTI.ftsr.modify(|_r, w| w.tr4().set_bit());
 		dp.EXTI.rtsr.modify(|_r, w| w.tr4().set_bit());
+
+		// Set EXTI3 to use PORT B (PB3) - ps2_clk1
+		dp.SYSCFG.exticr1.modify(|_r, w| w.exti3().pb3());
+
+		// Enable EXTI3 interrupt as external falling edge
+		dp.EXTI.imr.modify(|_r, w| w.mr3().set_bit());
+		dp.EXTI.emr.modify(|_r, w| w.mr3().set_bit());
+		dp.EXTI.ftsr.modify(|_r, w| w.tr3().set_bit());
 
 		// Spawn the tasks that run all the time
 		led_power_blink::spawn().unwrap();
@@ -347,16 +401,17 @@ mod app {
 			state_dc_power_enabled: DcPowerState::Off,
 			pin_dc_on,
 			pin_sys_reset,
-			ps2_clk0,
-			_ps2_clk1,
-			ps2_dat0,
-			_ps2_dat1,
+			ps2_clk0: Ps2Clk0Pin::Input(ps2_clk0),
+			ps2_clk1: Ps2Clk1Pin::Input(ps2_clk1),
+			ps2_dat0: Ps2Data0Pin::Input(ps2_dat0),
+			ps2_dat1: Ps2Data1Pin::Input(ps2_dat1),
 			exti: dp.EXTI,
 			msg_q_out,
 			msg_q_in,
 			spi,
 			pin_cs,
 			kb_decoder: neotron_bmc_pico::ps2::Ps2Decoder::new(),
+			mouse_decoder: neotron_bmc_pico::ps2::Ps2Decoder::new(),
 		};
 		let local_resources = Local {
 			press_button_power_short: debouncr::debounce_2(false),
@@ -384,6 +439,7 @@ mod app {
 		defmt::info!("Idle is running...");
 		let mut irq_forced_low = true;
 		let mut is_high = false;
+		let mut mouse_reset = false;
 		loop {
 			if irq_forced_low || !register_state.ps2_kb_bytes.is_empty() {
 				// We need service
@@ -404,19 +460,31 @@ mod app {
 			match ctx.shared.msg_q_out.dequeue() {
 				Some(Message::Ps2Data0(word)) => {
 					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
-						defmt::info!("< KB 0x{:x}", byte);
+						defmt::info!("< KB 0x{=u8:02x}", byte);
 						if let Err(_x) = register_state.ps2_kb_bytes.push_back(byte) {
 							defmt::warn!("KB overflow!");
 						}
+						if byte == 0xAA {
+							setup_kb_out::spawn().unwrap();
+						}
 					} else {
-						defmt::warn!("< Bad KB 0x{:x}", word);
+						defmt::warn!("< Bad KB 0x{=u16:03x}", word);
 					}
 				}
 				Some(Message::Ps2Data1(word)) => {
 					if let Some(byte) = neotron_bmc_pico::ps2::Ps2Decoder::check_word(word) {
-						defmt::info!("< MS 0x{:x}", byte);
+						defmt::info!("< MS 0x{=u8:02x}", byte);
+						if byte == 0xAA && !mouse_reset {
+							mouse_reset = true;
+						} else if byte == 0x00 && mouse_reset {
+							// talk to the mouse
+							setup_mouse_out::spawn().unwrap();
+							mouse_reset = false;
+						} else {
+							mouse_reset = false;
+						}
 					} else {
-						defmt::warn!("< Bad MS 0x{:x}", word);
+						defmt::warn!("< Bad MS 0x{=u16:03x}", word);
 					}
 				}
 				Some(Message::PowerButtonLongPress) => {
@@ -595,24 +663,63 @@ mod app {
 	#[task(
 		binds = EXTI4_15,
 		priority = 4,
-		shared = [ps2_clk0, msg_q_in, ps2_dat0, exti, pin_cs, kb_decoder],
+		shared = [msg_q_in, ps2_dat0, exti, pin_cs, kb_decoder],
 	)]
 	fn exti4_15_interrupt(mut ctx: exti4_15_interrupt::Context) {
 		let pr = ctx.shared.exti.pr.read();
 		// Is this EXT15 (PS/2 Port 0 clock input)
 		if pr.pr15().bit_is_set() {
-			let data_bit = ctx.shared.ps2_dat0.is_high().unwrap();
-			// Do we have a complete word?
-			if let Some(data) = ctx.shared.kb_decoder.lock(|r| r.add_bit(data_bit)) {
-				// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
-				if ctx
-					.shared
-					.msg_q_in
-					.lock(|q| q.enqueue(Message::Ps2Data0(data)))
-					.is_err()
-				{
-					panic!("queue full");
-				};
+			let mut pin = Ps2Data0Pin::Neither;
+			core::mem::swap(&mut pin, ctx.shared.ps2_dat0);
+			match pin {
+				Ps2Data0Pin::Input(pin) => {
+					let data_bit = pin.is_high().unwrap();
+					// Do we have a complete word?
+					if let Some(data) = ctx.shared.kb_decoder.lock(|r| r.add_bit(data_bit)) {
+						// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
+						if ctx
+							.shared
+							.msg_q_in
+							.lock(|q| q.enqueue(Message::Ps2Data0(data)))
+							.is_err()
+						{
+							panic!("queue full");
+						};
+					}
+					*ctx.shared.ps2_dat0 = Ps2Data0Pin::Input(pin);
+				}
+				Ps2Data0Pin::Output(mut pin, bits) => {
+					if (bits & 0x01) == 0 {
+						pin.set_low().unwrap();
+					} else {
+						pin.set_high().unwrap();
+					}
+					if bits == 0x0001 {
+						// that was the last bit - skip the ack bit
+						cortex_m::interrupt::free(|cs| {
+							*ctx.shared.ps2_dat0 = Ps2Data0Pin::Skip(pin.into_floating_input(cs));
+						});
+						// flip from rising to falling
+						ctx.shared.exti.rtsr.modify(|_r, w| {
+							w.tr4().clear_bit();
+							w
+						});
+						ctx.shared.exti.ftsr.modify(|_r, w| {
+							w.tr4().set_bit();
+							w
+						});
+					} else {
+						// Put it back as it was
+						*ctx.shared.ps2_dat0 = Ps2Data0Pin::Output(pin, bits >> 1);
+					}
+				}
+				Ps2Data0Pin::Skip(pin) => {
+					// skipped the ack bit, now we're running again
+					*ctx.shared.ps2_dat0 = Ps2Data0Pin::Input(pin);
+				}
+				Ps2Data0Pin::Neither => {
+					unreachable!();
+				}
 			}
 			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr15().set_bit());
@@ -631,6 +738,79 @@ mod app {
 			}
 			// Clear the pending flag for this pin
 			ctx.shared.exti.pr.write(|w| w.pr4().set_bit());
+		}
+	}
+
+	/// This is the external GPIO interrupt task for EXTI3.
+	///
+	/// It handles PS/2 clock edges on the mouse port.
+	///
+	/// It is very high priority, as we can't afford to miss a PS/2 clock edge.
+	#[task(
+		binds = EXTI2_3,
+		priority = 4,
+		shared = [msg_q_in, ps2_dat1, exti, mouse_decoder],
+	)]
+	fn exti3_interrupt(mut ctx: exti3_interrupt::Context) {
+		let pr = ctx.shared.exti.pr.read();
+		// Is this EXT3 (PS/2 Port 1 clock input)
+		defmt::debug!("1");
+		if pr.pr3().bit_is_set() {
+			defmt::debug!("2");
+			let mut pin = Ps2Data1Pin::Neither;
+			core::mem::swap(&mut pin, ctx.shared.ps2_dat1);
+			match pin {
+				Ps2Data1Pin::Input(pin) => {
+					let data_bit = pin.is_high().unwrap();
+					// Do we have a complete word?
+					if let Some(data) = ctx.shared.mouse_decoder.lock(|r| r.add_bit(data_bit)) {
+						// Don't dump in the ISR - we're busy. Add it to this nice lockless queue instead.
+						if ctx
+							.shared
+							.msg_q_in
+							.lock(|q| q.enqueue(Message::Ps2Data1(data)))
+							.is_err()
+						{
+							panic!("queue full");
+						};
+					}
+					*ctx.shared.ps2_dat1 = Ps2Data1Pin::Skip(pin);
+				}
+				Ps2Data1Pin::Output(mut pin, bits) => {
+					if (bits & 0x01) == 0 {
+						pin.set_low().unwrap();
+					} else {
+						pin.set_high().unwrap();
+					}
+					if bits == 0x0001 {
+						// that was the last bit - skip the ack bit
+						cortex_m::interrupt::free(|cs| {
+							*ctx.shared.ps2_dat1 = Ps2Data1Pin::Skip(pin.into_floating_input(cs));
+						});
+						// flip from rising to falling
+						ctx.shared.exti.rtsr.modify(|_r, w| {
+							w.tr3().clear_bit();
+							w
+						});
+						ctx.shared.exti.ftsr.modify(|_r, w| {
+							w.tr3().set_bit();
+							w
+						});
+					} else {
+						// Put it back as it was
+						*ctx.shared.ps2_dat1 = Ps2Data1Pin::Output(pin, bits >> 1);
+					}
+				}
+				Ps2Data1Pin::Skip(pin) => {
+					// skipped the ack bit, now we're running again
+					*ctx.shared.ps2_dat1 = Ps2Data1Pin::Input(pin);
+				}
+				Ps2Data1Pin::Neither => {
+					unreachable!();
+				}
+			}
+			// Clear the pending flag for this pin
+			ctx.shared.exti.pr.write(|w| w.pr3().set_bit());
 		}
 	}
 
@@ -661,6 +841,7 @@ mod app {
 
 		speaker_pwm_stop::spawn_after(100.millis()).unwrap();
 	}
+
 	/// Task which stops the speaker from playing
 	#[task(shared = [msg_q_in])]
 	fn speaker_pwm_stop(mut ctx: speaker_pwm_stop::Context) {
@@ -715,7 +896,7 @@ mod app {
 	/// interrupt.
 	#[task(
 		shared = [
-			led_power, button_power, button_reset, msg_q_in, kb_decoder
+			led_power, button_power, button_reset, msg_q_in, kb_decoder, mouse_decoder
 		],
 		local = [ press_button_power_short, press_button_power_long, press_button_reset_short ]
 	)]
@@ -724,8 +905,9 @@ mod app {
 		let pwr_pressed: bool = ctx.shared.button_power.is_low().unwrap();
 		let rst_pressed: bool = ctx.shared.button_reset.is_low().unwrap();
 
-		// Poll PS2
+		// Poll PS2 - handles PS/2 timeouts
 		ctx.shared.kb_decoder.lock(|r| r.poll());
+		ctx.shared.mouse_decoder.lock(|r| r.poll());
 
 		// Update state
 		let pwr_short_edge = ctx.local.press_button_power_short.update(pwr_pressed);
@@ -801,6 +983,116 @@ mod app {
 			// Raising the reset line takes the rest of the system out of reset
 			ctx.shared.pin_sys_reset.lock(|pin| pin.set_high().unwrap());
 		}
+	}
+
+	#[task(shared = [ps2_clk1, ps2_dat1, exti], priority = 4)]
+	fn setup_mouse_out(ctx: setup_mouse_out::Context) {
+		defmt::debug!("Holding clock");
+		let mut pin = Ps2Clk1Pin::Neither;
+		core::mem::swap(&mut pin, ctx.shared.ps2_clk1);
+		// Hold the clock pin low for 100us
+		let Ps2Clk1Pin::Input(pin) = pin else {
+			panic!("PS/2 Clock 1 pin already output?");
+		};
+		let mut pin = cortex_m::interrupt::free(|cs| pin.into_open_drain_output(cs));
+
+		pin.set_low().unwrap();
+		// wait for 100us
+		setup_mouse_out2::spawn_after(200u64.millis()).unwrap();
+		*ctx.shared.ps2_clk1 = Ps2Clk1Pin::Output(pin);
+
+		let mut pin = Ps2Data1Pin::Neither;
+		core::mem::swap(&mut pin, ctx.shared.ps2_dat1);
+		match pin {
+			Ps2Data1Pin::Input(pin) => {
+				// Sending 0xF4 'Enable Data Reporting'
+				cortex_m::interrupt::free(|cs| {
+					*ctx.shared.ps2_dat1 =
+						Ps2Data1Pin::Output(pin.into_open_drain_output(cs), 0b10111101000);
+				});
+				// flip from falling to rising edge
+				ctx.shared.exti.ftsr.modify(|_r, w| {
+					w.tr3().clear_bit();
+					w
+				});
+				ctx.shared.exti.rtsr.modify(|_r, w| {
+					w.tr3().set_bit();
+					w
+				});
+			}
+			_ => {
+				// Do nothing - we're already sending data?
+				core::mem::swap(&mut pin, ctx.shared.ps2_dat1);
+			}
+		}
+	}
+
+	#[task(shared = [ps2_clk1], priority = 4)]
+	fn setup_mouse_out2(ctx: setup_mouse_out2::Context) {
+		defmt::debug!("Releasing clock");
+		let mut pin = Ps2Clk1Pin::Neither;
+		core::mem::swap(&mut pin, ctx.shared.ps2_clk1);
+		// restore clock pin to input
+		let Ps2Clk1Pin::Output(pin) = pin else {
+			panic!("PS/2 Clock 1 pin not output?");
+		};
+		let pin = cortex_m::interrupt::free(|cs| pin.into_floating_input(cs));
+		*ctx.shared.ps2_clk1 = Ps2Clk1Pin::Input(pin);
+	}
+
+	#[task(shared = [ps2_clk0, ps2_dat0, exti], priority = 4)]
+	fn setup_kb_out(ctx: setup_kb_out::Context) {
+		defmt::debug!("Holding clock");
+		let mut pin = Ps2Clk0Pin::Neither;
+		core::mem::swap(&mut pin, ctx.shared.ps2_clk0);
+		// Hold the clock pin low for 100us
+		let Ps2Clk0Pin::Input(pin) = pin else {
+			panic!("PS/2 Clock 0 pin already output?");
+		};
+		let mut pin = cortex_m::interrupt::free(|cs| pin.into_open_drain_output(cs));
+
+		pin.set_low().unwrap();
+		// wait for 100us
+		setup_kb_out2::spawn_after(200u64.millis()).unwrap();
+		*ctx.shared.ps2_clk0 = Ps2Clk0Pin::Output(pin);
+
+		let mut pin = Ps2Data0Pin::Neither;
+		core::mem::swap(&mut pin, ctx.shared.ps2_dat0);
+		match pin {
+			Ps2Data0Pin::Input(pin) => {
+				// Sending 0xF2 'Read ID'
+				cortex_m::interrupt::free(|cs| {
+					*ctx.shared.ps2_dat0 =
+						Ps2Data0Pin::Output(pin.into_open_drain_output(cs), 0b10111100100);
+				});
+				// flip from falling to rising edge
+				ctx.shared.exti.ftsr.modify(|_r, w| {
+					w.tr4().clear_bit();
+					w
+				});
+				ctx.shared.exti.rtsr.modify(|_r, w| {
+					w.tr4().set_bit();
+					w
+				});
+			}
+			_ => {
+				// Do nothing - we're already sending data?
+				core::mem::swap(&mut pin, ctx.shared.ps2_dat0);
+			}
+		}
+	}
+
+	#[task(shared = [ps2_clk0], priority = 4)]
+	fn setup_kb_out2(ctx: setup_kb_out2::Context) {
+		defmt::debug!("Releasing clock");
+		let mut pin = Ps2Clk0Pin::Neither;
+		core::mem::swap(&mut pin, ctx.shared.ps2_clk0);
+		// restore clock pin to input
+		let Ps2Clk0Pin::Output(pin) = pin else {
+			panic!("PS/2 Clock 0 pin not output?");
+		};
+		let pin = cortex_m::interrupt::free(|cs| pin.into_floating_input(cs));
+		*ctx.shared.ps2_clk0 = Ps2Clk0Pin::Input(pin);
 	}
 }
 
