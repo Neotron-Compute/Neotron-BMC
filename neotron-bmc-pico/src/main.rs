@@ -703,15 +703,6 @@ mod app {
 						cortex_m::interrupt::free(|cs| {
 							*ctx.shared.ps2_dat0 = Ps2Data0Pin::Skip(pin.into_floating_input(cs));
 						});
-						// flip from rising to falling
-						ctx.shared.exti.rtsr.modify(|_r, w| {
-							w.tr4().clear_bit();
-							w
-						});
-						ctx.shared.exti.ftsr.modify(|_r, w| {
-							w.tr4().set_bit();
-							w
-						});
 					} else {
 						// Put it back as it was
 						*ctx.shared.ps2_dat0 = Ps2Data0Pin::Output(pin, bits >> 1);
@@ -758,9 +749,7 @@ mod app {
 	fn exti3_interrupt(mut ctx: exti3_interrupt::Context) {
 		let pr = ctx.shared.exti.pr.read();
 		// Is this EXT3 (PS/2 Port 1 clock input)
-		defmt::debug!("1");
 		if pr.pr3().bit_is_set() {
-			defmt::debug!("2");
 			let mut pin = Ps2Data1Pin::Neither;
 			core::mem::swap(&mut pin, ctx.shared.ps2_dat1);
 			match pin {
@@ -778,7 +767,7 @@ mod app {
 							panic!("queue full");
 						};
 					}
-					*ctx.shared.ps2_dat1 = Ps2Data1Pin::Skip(pin);
+					*ctx.shared.ps2_dat1 = Ps2Data1Pin::Input(pin);
 				}
 				Ps2Data1Pin::Output(mut pin, bits) => {
 					if (bits & 0x01) == 0 {
@@ -790,15 +779,6 @@ mod app {
 						// that was the last bit - skip the ack bit
 						cortex_m::interrupt::free(|cs| {
 							*ctx.shared.ps2_dat1 = Ps2Data1Pin::Skip(pin.into_floating_input(cs));
-						});
-						// flip from rising to falling
-						ctx.shared.exti.rtsr.modify(|_r, w| {
-							w.tr3().clear_bit();
-							w
-						});
-						ctx.shared.exti.ftsr.modify(|_r, w| {
-							w.tr3().set_bit();
-							w
 						});
 					} else {
 						// Put it back as it was
@@ -991,7 +971,7 @@ mod app {
 
 	#[task(shared = [ps2_clk1, ps2_dat1, exti], priority = 4)]
 	fn setup_mouse_out(ctx: setup_mouse_out::Context) {
-		defmt::debug!("Holding clock");
+		defmt::debug!("Holding mouse clock");
 		let mut pin = Ps2Clk1Pin::Neither;
 		core::mem::swap(&mut pin, ctx.shared.ps2_clk1);
 		// Hold the clock pin low for 100us
@@ -1010,18 +990,10 @@ mod app {
 		match pin {
 			Ps2Data1Pin::Input(pin) => {
 				// Sending 0xF4 'Enable Data Reporting'
+				let word = neotron_bmc_pico::ps2::Ps2Decoder::encode_byte(0xF4);
 				cortex_m::interrupt::free(|cs| {
 					*ctx.shared.ps2_dat1 =
-						Ps2Data1Pin::Output(pin.into_open_drain_output(cs), 0b10111101000);
-				});
-				// flip from falling to rising edge
-				ctx.shared.exti.ftsr.modify(|_r, w| {
-					w.tr3().clear_bit();
-					w
-				});
-				ctx.shared.exti.rtsr.modify(|_r, w| {
-					w.tr3().set_bit();
-					w
+						Ps2Data1Pin::Output(pin.into_open_drain_output(cs), word);
 				});
 			}
 			_ => {
@@ -1046,7 +1018,7 @@ mod app {
 
 	#[task(shared = [ps2_clk0, ps2_dat0, exti], priority = 4)]
 	fn setup_kb_out(ctx: setup_kb_out::Context) {
-		defmt::debug!("Holding clock");
+		defmt::debug!("Holding keyboard clock");
 		let mut pin = Ps2Clk0Pin::Neither;
 		core::mem::swap(&mut pin, ctx.shared.ps2_clk0);
 		// Hold the clock pin low for 100us
@@ -1065,18 +1037,10 @@ mod app {
 		match pin {
 			Ps2Data0Pin::Input(pin) => {
 				// Sending 0xF2 'Read ID'
+				let word = neotron_bmc_pico::ps2::Ps2Decoder::encode_byte(0xF2);
 				cortex_m::interrupt::free(|cs| {
 					*ctx.shared.ps2_dat0 =
-						Ps2Data0Pin::Output(pin.into_open_drain_output(cs), 0b10111100100);
-				});
-				// flip from falling to rising edge
-				ctx.shared.exti.ftsr.modify(|_r, w| {
-					w.tr4().clear_bit();
-					w
-				});
-				ctx.shared.exti.rtsr.modify(|_r, w| {
-					w.tr4().set_bit();
-					w
+						Ps2Data0Pin::Output(pin.into_open_drain_output(cs), word);
 				});
 			}
 			_ => {

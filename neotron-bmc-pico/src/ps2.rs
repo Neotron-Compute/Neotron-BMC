@@ -91,4 +91,16 @@ impl Ps2Decoder {
 
 		Some(data)
 	}
+
+	/// Encode a byte, with start, stop and parity bits.
+	pub const fn encode_byte(byte: u8) -> u16 {
+		let mut data: u16 = 0;
+		data |= 0b100_0000_0000;
+		data |= (byte as u16) << 1;
+		let need_parity = (data.count_ones() % 2) != 0;
+		if need_parity {
+			data |= 0b010_0000_0000;
+		}
+		data
+	}
 }
