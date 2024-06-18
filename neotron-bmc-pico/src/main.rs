@@ -239,6 +239,8 @@ mod app {
 		let dp: pac::Peripherals = ctx.device;
 		let cp: cortex_m::Peripherals = ctx.core;
 
+		dp.RCC.apb2enr.modify(|_, w| w.syscfgen().set_bit());
+
 		let mut flash = dp.FLASH;
 		let mut rcc = dp
 			.RCC
