@@ -16,10 +16,12 @@ use core::convert::TryFrom;
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
+	adc,
+	adc::Adc,
+	gpio::gpioa::{PA0, PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
 	gpio::gpiob::{PB0, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
-	gpio::{Alternate, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
+	gpio::{Alternate, Analog, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
 	rcc, serial,
@@ -170,6 +172,10 @@ mod app {
 		rcc: Option<rcc::Rcc>,
 		/// IRQ pin
 		pin_irq: PA8<Output<PushPull>>,
+		/// 3.3V monitor pin
+		pin_3v3_monitor: PA0<Analog>,
+		/// ADC
+		adc: Adc,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
@@ -204,6 +210,10 @@ mod app {
 		// Initialize the monotonic timer using the Cortex-M SysTick peripheral
 		let mono = Systick::new(cp.SYST, rcc.clocks.sysclk().0);
 
+		let mut adc = Adc::new(dp.ADC, &mut rcc);
+		adc.set_sample_time(adc::AdcSampleTime::T_1);
+		adc.set_precision(adc::AdcPrecision::B_6);
+
 		defmt::info!("Creating pins...");
 		let gpioa = dp.GPIOA.split(&mut rcc);
 		let gpiob = dp.GPIOB.split(&mut rcc);
@@ -236,6 +246,8 @@ mod app {
 			pin_cipo,
 			pin_copi,
 			mut pin_irq,
+			pin_3v3_monitor,
+			adc,
 		) = cortex_m::interrupt::free(|cs| {
 			(
 				// uart_tx,
@@ -281,6 +293,10 @@ mod app {
 				gpioa.pa7.into_alternate_af0(cs),
 				// pin_irq
 				gpioa.pa8.into_push_pull_output(cs),
+				// pin_3v3_monitor
+				gpioa.pa0.into_analog(cs),
+				// ADC
+				adc,
 			)
 		});
 
@@ -364,6 +380,8 @@ mod app {
 			press_button_reset_short: debouncr::debounce_2(false),
 			rcc: Some(rcc),
 			pin_irq,
+			pin_3v3_monitor,
+			adc,
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -372,7 +390,7 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, speaker], local = [pin_irq, rcc, speaker_task_handle: Option<speaker_pwm_stop::MyMono::SpawnHandle> = None])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, speaker], local = [pin_irq, rcc, speaker_task_handle: Option<speaker_pwm_stop::MyMono::SpawnHandle> = None, adc, pin_3v3_monitor])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
@@ -420,7 +438,8 @@ mod app {
 					}
 				}
 				Some(Message::PowerButtonLongPress) => {
-					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
+					let power_state = ctx.shared.state_dc_power_enabled.lock(|r| *r);
+					if power_state == DcPowerState::On || power_state == DcPowerState::Starting {
 						defmt::info!("Power off requested!");
 						ctx.shared
 							.state_dc_power_enabled
@@ -452,26 +471,12 @@ mod app {
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
 						// Step 4 - Turn on PSU
 						ctx.shared.pin_dc_on.set_high().unwrap();
-						// Step 5 - Leave it in reset for a while.
-						// TODO: Start monitoring 3.3V and 5.0V rails here
-						// TODO: Take system out of reset when 3.3V and 5.0V are good
-						// Returns an error if it's already scheduled (but we don't care)
-						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
-						// Set 6 - unmask the IRQ
-						irq_forced_low = false;
+						// Step 5 happens below when power is good
+						defmt::info!("Waiting for power-good");
 					}
 				}
 				Some(Message::PowerButtonRelease) => {
-					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Starting {
-						defmt::info!("Power button released.");
-						// Button released after power on. Change the power
-						// state machine t "On". We were in 'Starting' to ignore
-						// any further button events until the button had been
-						// released.
-						ctx.shared
-							.state_dc_power_enabled
-							.lock(|r| *r = DcPowerState::On);
-					}
+					defmt::info!("Power button released.");
 				}
 				Some(Message::ResetButtonShortPress) => {
 					// Is the board powered on? Don't do a reset if it's powered off.
@@ -493,7 +498,7 @@ mod app {
 					}
 				}
 				Some(Message::SpiEnable) => {
-					if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
+					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 						// Turn on the SPI peripheral and expect four bytes (the
 						// length of a Request).
 						ctx.shared.spi.lock(|s| s.start(4));
@@ -583,7 +588,37 @@ mod app {
 					);
 				}
 			}
-			// TODO: Read ADC for 3.3V and 5.0V rails and check good
+			// TODO: Also monitor 5.0V rail
+
+			// Wait for power good
+			if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Starting {
+				let mon_3v3 = ctx.local.adc.read_abs_mv(ctx.local.pin_3v3_monitor);
+				defmt::trace!("3v3 reading: {}", mon_3v3);
+				if mon_3v3 < 1600 {
+					defmt::info!("3v3 below threshold: {} mv", mon_3v3);
+				} else {
+					defmt::info!(
+						"Power good. 3v3 at {} mV. Continue with startup sequence.",
+						mon_3v3
+					);
+					// Change the power state machine to "On". We were in 'Starting' to ignore
+					// any further button events until the button had been
+					// released and to wait for power good.
+					ctx.shared
+						.state_dc_power_enabled
+						.lock(|r| *r = DcPowerState::On);
+					// Steps 1 - 4 happened above, in the button press handler
+					// Step 5 - Leave it in reset for a while.
+					// TODO: Start monitoring 3.3V and 5.0V rails here
+					// TODO: Take system out of reset when 3.3V and 5.0V are good
+					// Returns an error if it's already scheduled (but we don't care)
+					let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
+					// Set 6 - unmask the IRQ
+					irq_forced_low = false;
+				}
+			}
+			// TODO: Shutdown system if mon_3v3 falls below threshold
+			// TODO: Maybe report voltages to CPU?
 		}
 	}
 
@@ -797,7 +832,7 @@ mod app {
 	#[task(shared = [pin_sys_reset, state_dc_power_enabled])]
 	fn exit_reset(mut ctx: exit_reset::Context) {
 		defmt::debug!("End reset");
-		if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
+		if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 			// Raising the reset line takes the rest of the system out of reset
 			ctx.shared.pin_sys_reset.lock(|pin| pin.set_high().unwrap());
 		}
