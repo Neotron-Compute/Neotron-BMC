@@ -43,6 +43,10 @@ const DEBOUNCE_POLL_INTERVAL_MS: u64 = 75;
 /// Length of a reset pulse, in milliseconds
 const RESET_DURATION_MS: u64 = 250;
 
+/// Minimum voltage level of the 3.3V rail before we start
+/// driving the IRQ pin high, to avoid back-powering.
+const POWER_GOOD_THRESHOLD_MV: u16 = 3200;
+
 /// The states we can be in controlling the DC power
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -211,8 +215,12 @@ mod app {
 		let mono = Systick::new(cp.SYST, rcc.clocks.sysclk().0);
 
 		let mut adc = Adc::new(dp.ADC, &mut rcc);
-		adc.set_sample_time(adc::AdcSampleTime::T_1);
-		adc.set_precision(adc::AdcPrecision::B_6);
+		// 8 bit precision should be plenty for our use case
+		adc.set_precision(adc::AdcPrecision::B_8);
+		// Approx. sampling time required to charge the 8pF sample & hold
+		// capacitor through the 10kΩ resistor and to get a reading with 8 bit accuracy:
+		// 8pF * 10kΩ * ln(2^8) ≈ 440ns ≈ 6 ADC clock cycles
+		adc.set_sample_time(adc::AdcSampleTime::T_7);
 
 		defmt::info!("Creating pins...");
 		let gpioa = dp.GPIOA.split(&mut rcc);
@@ -471,7 +479,8 @@ mod app {
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
 						// Step 4 - Turn on PSU
 						ctx.shared.pin_dc_on.set_high().unwrap();
-						// Step 5 happens below when power is good
+						// Taking the system out of reset and enabling the IRQ line happens
+						// later, when the power rail is settled
 						defmt::info!("Waiting for power-good");
 					}
 				}
@@ -590,15 +599,32 @@ mod app {
 			}
 			// TODO: Also monitor 5.0V rail
 
-			// Wait for power good
+			// Wait for power-good
 			if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Starting {
+				// Reads the absolute voltage of the mon_3v3 line in mV.
+				// This line is connected to the 3v3 supply through a 50% voltage divider,
+				// so it should read 1650[mV] nominally.
+				//
+				// Note that read_abs_mv is relatively slow, as it internally reads
+				// ADC values from both the pin and an internal voltage reference, and
+				// does calculations including integer divisions.
+				//
+				// As we do not really require an accurate absolute voltage, but only
+				// need to be sure that the 3v3 rail is reasonably close to the 3.3VP
+				// rail (the permanent power rail supplying the BMC), this could be
+				// rewritten using `ctx.local.adc.read(ctx.local.pin_3v3_monitor)`
+				// in case performance becomes an issue.
 				let mon_3v3 = ctx.local.adc.read_abs_mv(ctx.local.pin_3v3_monitor);
-				defmt::trace!("3v3 reading: {}", mon_3v3);
-				if mon_3v3 < 1600 {
-					defmt::info!("3v3 below threshold: {} mv", mon_3v3);
+				defmt::trace!("mon_3v3 reading: {} mV", mon_3v3);
+				if mon_3v3 < POWER_GOOD_THRESHOLD_MV / 2 {
+					defmt::info!(
+						"mon_3v3 below threshold of {} mV: {} mV",
+						POWER_GOOD_THRESHOLD_MV / 2,
+						mon_3v3
+					);
 				} else {
 					defmt::info!(
-						"Power good. 3v3 at {} mV. Continue with startup sequence.",
+						"Power good. Mon_3v3 at {} mV. Continue with startup sequence.",
 						mon_3v3
 					);
 					// Change the power state machine to "On". We were in 'Starting' to ignore
@@ -607,13 +633,10 @@ mod app {
 					ctx.shared
 						.state_dc_power_enabled
 						.lock(|r| *r = DcPowerState::On);
-					// Steps 1 - 4 happened above, in the button press handler
-					// Step 5 - Leave it in reset for a while.
-					// TODO: Start monitoring 3.3V and 5.0V rails here
-					// TODO: Take system out of reset when 3.3V and 5.0V are good
+					// Wait a bit before taking system out of reset.
 					// Returns an error if it's already scheduled (but we don't care)
 					let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
-					// Set 6 - unmask the IRQ
+					// Unmask the IRQ
 					irq_forced_low = false;
 				}
 			}
