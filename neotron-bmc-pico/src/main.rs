@@ -16,10 +16,12 @@ use core::convert::TryFrom;
 use heapless::spsc::{Consumer, Producer, Queue};
 use rtic::app;
 use stm32f0xx_hal::{
-	gpio::gpioa::{PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
+	adc,
+	adc::Adc,
+	gpio::gpioa::{PA0, PA10, PA11, PA12, PA15, PA2, PA3, PA4, PA8, PA9},
 	gpio::gpiob::{PB0, PB3, PB4, PB5},
 	gpio::gpiof::{PF0, PF1},
-	gpio::{Alternate, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
+	gpio::{Alternate, Analog, Floating, Input, Output, PullDown, PullUp, PushPull, AF1},
 	pac,
 	prelude::*,
 	rcc, serial,
@@ -40,6 +42,10 @@ const DEBOUNCE_POLL_INTERVAL_MS: u64 = 75;
 
 /// Length of a reset pulse, in milliseconds
 const RESET_DURATION_MS: u64 = 250;
+
+/// Minimum voltage level of the 3.3V rail before we start
+/// driving the IRQ pin high, to avoid back-powering.
+const POWER_GOOD_THRESHOLD_MV: u16 = 3200;
 
 /// The states we can be in controlling the DC power
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -170,6 +176,10 @@ mod app {
 		rcc: Option<rcc::Rcc>,
 		/// IRQ pin
 		pin_irq: PA8<Output<PushPull>>,
+		/// 3.3V monitor pin
+		pin_3v3_monitor: PA0<Analog>,
+		/// ADC
+		adc: Adc,
 	}
 
 	#[monotonic(binds = SysTick, default = true)]
@@ -204,6 +214,14 @@ mod app {
 		// Initialize the monotonic timer using the Cortex-M SysTick peripheral
 		let mono = Systick::new(cp.SYST, rcc.clocks.sysclk().0);
 
+		let mut adc = Adc::new(dp.ADC, &mut rcc);
+		// 8 bit precision should be plenty for our use case
+		adc.set_precision(adc::AdcPrecision::B_8);
+		// Approx. sampling time required to charge the 8pF sample & hold
+		// capacitor through the 10kΩ resistor and to get a reading with 8 bit accuracy:
+		// 8pF * 10kΩ * ln(2^8) ≈ 440ns ≈ 6 ADC clock cycles
+		adc.set_sample_time(adc::AdcSampleTime::T_7);
+
 		defmt::info!("Creating pins...");
 		let gpioa = dp.GPIOA.split(&mut rcc);
 		let gpiob = dp.GPIOB.split(&mut rcc);
@@ -236,6 +254,8 @@ mod app {
 			pin_cipo,
 			pin_copi,
 			mut pin_irq,
+			pin_3v3_monitor,
+			adc,
 		) = cortex_m::interrupt::free(|cs| {
 			(
 				// uart_tx,
@@ -281,6 +301,10 @@ mod app {
 				gpioa.pa7.into_alternate_af0(cs),
 				// pin_irq
 				gpioa.pa8.into_push_pull_output(cs),
+				// pin_3v3_monitor
+				gpioa.pa0.into_analog(cs),
+				// ADC
+				adc,
 			)
 		});
 
@@ -364,6 +388,8 @@ mod app {
 			press_button_reset_short: debouncr::debounce_2(false),
 			rcc: Some(rcc),
 			pin_irq,
+			pin_3v3_monitor,
+			adc,
 		};
 		let init = init::Monotonics(mono);
 		(shared_resources, local_resources, init)
@@ -372,7 +398,7 @@ mod app {
 	/// Our idle task.
 	///
 	/// This task is called when there is nothing else to do.
-	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, speaker], local = [pin_irq, rcc, speaker_task_handle: Option<speaker_pwm_stop::MyMono::SpawnHandle> = None])]
+	#[idle(shared = [msg_q_out, msg_q_in, spi, state_dc_power_enabled, pin_dc_on, pin_sys_reset, speaker], local = [pin_irq, rcc, speaker_task_handle: Option<speaker_pwm_stop::MyMono::SpawnHandle> = None, adc, pin_3v3_monitor])]
 	fn idle(mut ctx: idle::Context) -> ! {
 		// TODO: Get this from the VERSION static variable or from PKG_VERSION
 		let mut register_state = RegisterState {
@@ -420,7 +446,8 @@ mod app {
 					}
 				}
 				Some(Message::PowerButtonLongPress) => {
-					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
+					let power_state = ctx.shared.state_dc_power_enabled.lock(|r| *r);
+					if power_state == DcPowerState::On || power_state == DcPowerState::Starting {
 						defmt::info!("Power off requested!");
 						ctx.shared
 							.state_dc_power_enabled
@@ -452,26 +479,13 @@ mod app {
 						ctx.shared.pin_sys_reset.lock(|pin| pin.set_low().unwrap());
 						// Step 4 - Turn on PSU
 						ctx.shared.pin_dc_on.set_high().unwrap();
-						// Step 5 - Leave it in reset for a while.
-						// TODO: Start monitoring 3.3V and 5.0V rails here
-						// TODO: Take system out of reset when 3.3V and 5.0V are good
-						// Returns an error if it's already scheduled (but we don't care)
-						let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
-						// Set 6 - unmask the IRQ
-						irq_forced_low = false;
+						// Taking the system out of reset and enabling the IRQ line happens
+						// later, when the power rail is settled
+						defmt::info!("Waiting for power-good");
 					}
 				}
 				Some(Message::PowerButtonRelease) => {
-					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Starting {
-						defmt::info!("Power button released.");
-						// Button released after power on. Change the power
-						// state machine t "On". We were in 'Starting' to ignore
-						// any further button events until the button had been
-						// released.
-						ctx.shared
-							.state_dc_power_enabled
-							.lock(|r| *r = DcPowerState::On);
-					}
+					defmt::info!("Power button released.");
 				}
 				Some(Message::ResetButtonShortPress) => {
 					// Is the board powered on? Don't do a reset if it's powered off.
@@ -493,7 +507,7 @@ mod app {
 					}
 				}
 				Some(Message::SpiEnable) => {
-					if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
+					if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 						// Turn on the SPI peripheral and expect four bytes (the
 						// length of a Request).
 						ctx.shared.spi.lock(|s| s.start(4));
@@ -583,7 +597,51 @@ mod app {
 					);
 				}
 			}
-			// TODO: Read ADC for 3.3V and 5.0V rails and check good
+			// TODO: Also monitor 5.0V rail
+
+			// Wait for power-good
+			if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::Starting {
+				// Reads the absolute voltage of the mon_3v3 line in mV.
+				// This line is connected to the 3v3 supply through a 50% voltage divider,
+				// so it should read 1650[mV] nominally.
+				//
+				// Note that read_abs_mv is relatively slow, as it internally reads
+				// ADC values from both the pin and an internal voltage reference, and
+				// does calculations including integer divisions.
+				//
+				// As we do not really require an accurate absolute voltage, but only
+				// need to be sure that the 3v3 rail is reasonably close to the 3.3VP
+				// rail (the permanent power rail supplying the BMC), this could be
+				// rewritten using `ctx.local.adc.read(ctx.local.pin_3v3_monitor)`
+				// in case performance becomes an issue.
+				let mon_3v3 = ctx.local.adc.read_abs_mv(ctx.local.pin_3v3_monitor);
+				defmt::trace!("mon_3v3 reading: {} mV", mon_3v3);
+				if mon_3v3 < POWER_GOOD_THRESHOLD_MV / 2 {
+					defmt::info!(
+						"mon_3v3 below threshold of {} mV: {} mV",
+						POWER_GOOD_THRESHOLD_MV / 2,
+						mon_3v3
+					);
+				} else {
+					defmt::info!(
+						"Power good. Mon_3v3 at {} mV. Continue with startup sequence.",
+						mon_3v3
+					);
+					// Change the power state machine to "On". We were in 'Starting' to ignore
+					// any further button events until the button had been
+					// released and to wait for power good.
+					ctx.shared
+						.state_dc_power_enabled
+						.lock(|r| *r = DcPowerState::On);
+					// Wait a bit before taking system out of reset.
+					// Returns an error if it's already scheduled (but we don't care)
+					let _ = exit_reset::spawn_after(RESET_DURATION_MS.millis());
+					// Unmask the IRQ
+					irq_forced_low = false;
+				}
+			}
+			// TODO: Shutdown system if mon_3v3 falls below threshold
+			// TODO: Maybe report voltages to CPU?
 		}
 	}
 
@@ -797,7 +855,7 @@ mod app {
 	#[task(shared = [pin_sys_reset, state_dc_power_enabled])]
 	fn exit_reset(mut ctx: exit_reset::Context) {
 		defmt::debug!("End reset");
-		if ctx.shared.state_dc_power_enabled.lock(|r| *r) != DcPowerState::Off {
+		if ctx.shared.state_dc_power_enabled.lock(|r| *r) == DcPowerState::On {
 			// Raising the reset line takes the rest of the system out of reset
 			ctx.shared.pin_sys_reset.lock(|pin| pin.set_high().unwrap());
 		}
