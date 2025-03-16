@@ -65,8 +65,8 @@ The SPI interface runs in SPI mode 0 (clock line idles low, data sampled on risi
    * see https://www.rust-lang.org
 2. The `thumbv6m-none-eabi` target
    * run `rustup target add thumbv6m-none-eabi`
-3. `probe-run`
-   * run `cargo install probe-run`
+3. `probe-rs`
+   * See <https://probe.rs>
 4. `flip-link`
    * run `cargo install flip-link`
 
