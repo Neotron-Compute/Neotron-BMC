@@ -221,13 +221,19 @@ impl<const RXC: usize, const TXC: usize> SpiPeripheral<RXC, TXC> {
 	fn raw_read(&mut self) -> u8 {
 		// PAC only supports 16-bit read, but that pops two bytes off the FIFO.
 		// So force an 8-bit read.
-		unsafe { core::ptr::read_volatile(&self.dev.dr as *const _ as *const u8) }
+		let spi_dr_ptr = self.dev.dr.as_ptr() as *mut u8;
+		// Safety: we own the SPI device
+		unsafe { spi_dr_ptr.read_volatile() }
 	}
 
 	fn raw_write(&mut self, data: u8) {
 		// PAC only supports 16-bit read, but that pushes two bytes onto the FIFO.
 		// So force an 8-bit write.
-		unsafe { core::ptr::write_volatile(&self.dev.dr as *const _ as *mut u8, data) }
+		let spi_dr_ptr = self.dev.dr.as_ptr() as *mut u8;
+		// Safety: we own the SPI device
+		unsafe {
+			spi_dr_ptr.write_volatile(data);
+		}
 	}
 
 	/// Get a slice of data received so far.
